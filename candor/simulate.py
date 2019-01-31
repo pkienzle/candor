@@ -2,7 +2,6 @@
 Program to explore the beam profile and angular distribution for a simple
 reflectometer with two front slits.
 """
-
 from __future__ import division, print_function
 
 import sys
@@ -14,8 +13,8 @@ from numpy import (sin, cos, tan, arcsin, arccos, arctan, arctan2, radians, degr
 from numpy import pi, inf
 import pylab
 
+from .instrument import Candor
 #from .nice import Instrument, Motor
-
 
 # dimensions in millimeters
 MONOCHROMATOR_Z = -5216.5
@@ -28,11 +27,12 @@ SOURCE_LOUVER_MAX = 14.5  # maximum opening for source multi-slit
 SOURCE_SLIT_Z = -4335.86
 PRE_SAMPLE_SLIT_Z = -356.0
 POST_SAMPLE_SLIT_Z = 356.0
-DETECTOR_MASK_Z = 3496.
 DETECTOR_MASK_HEIGHT = 30.
 DETECTOR_MASK_WIDTHS = [10., 8., 6., 4.]
 DETECTOR_MASK_N = 30
 DETECTOR_MASK_SEPARATION = 12.84
+DETECTOR_Z = 3496.
+DETECTOR_WIDTH = (DETECTOR_MASK_N+1)*DETECTOR_MASK_SEPARATION
 
 WAVELENGTH_MIN = 4.
 WAVELENGTH_MAX = 6.
@@ -44,12 +44,13 @@ SOURCE_LOUVER_CENTERS = np.linspace(-1.5*SOURCE_LOUVER_SEPARATION,
 SOURCE_LOUVER_ANGLES = np.arctan2(SOURCE_LOUVER_CENTERS, -SOURCE_LOUVER_Z)
 
 
-def detector_mask(mask=0):
+def detector_mask(width=10.):
     """
     Return slit edges for candor detector mask.
     """
+    #width = DETECTOR_MASK_WIDTHS[mask]
     edges = comb(n=DETECTOR_MASK_N,
-                 width=DETECTOR_MASK_WIDTHS[mask],
+                 width=width,
                  separation=DETECTOR_MASK_SEPARATION)
     # Every 3rd channel is dead (used for cooling)
     edges = edges.reshape(-1, 3, 2)[:, :2, :].flatten()
@@ -77,78 +78,9 @@ def load_spectrum():
     :return:
     """
     datadir = os.path.abspath(os.path.dirname(__file__))
-    L, Iin = np.loadtxt(os.path.join(datadir, 'CANDOR-incident.dat')).T
-    _, Iout = np.loadtxt(os.path.join(datadir, 'CANDOR-detected.dat')).T
-    return np.vstack((L, Iin, Iout/Iin))
-
-def candor_wavelength_dispersion(L, mask=10., detector_distance=DETECTOR_MASK_Z):
-    """
-    Return estimated wavelength dispersion for the candor channels.
-
-    *L* (Ang) is the wavelength measured for each channel.
-
-    *mask* (mm) is the mask opening at the start of each detector channel.
-
-    *detector_distance* (mm) is the distance from the center of the sample
-    to the detector mask.
-
-    Note: result is 0.01% below the value shown in Fig 9 of ref.
-
-    **References**
-
-    Jeremy Cook, "Estimates of maximum CANDOR detector count rates on NG-1"
-    Oct 27, 2015
-    """
-    #: (Ang) d-spacing for graphite (002)
-    dspacing = 3.354
-
-    #: (rad) FWHM mosaic spread for graphite
-    eta = radians(30./60.)  # convert arcseconds to radians
-
-    #: (rad) FWHM incident divergence
-    a0 = mask/detector_distance
-
-    #: (rad) FWHM outgoing divergence
-    a1 = a0 + 2*eta
-
-    #: (rad) bragg angle for wavelength selector
-    theta = arcsin(L/2/dspacing)
-    #pylab.plot(degrees(theta))
-
-    #: (unitless) FWHM dL/L, as given in Eqn 6 of the reference
-    dLoL = (sqrt((a0**2*a1**2 + (a0**2 + a1**2)*eta**2)/(a0**2+a1**2+4*eta**2))
-            / tan(theta))
-    return dLoL
-
-def plot_dLoL():
-    spectrum = load_spectrum()
-    L = spectrum[0]
-    crystal = np.arange(1, 55)
-    pylab.plot(crystal, 100*candor_wavelength_dispersion(L, 10), label="10 mm")
-    pylab.plot(crystal, 100*candor_wavelength_dispersion(L, 8), label="8 mm")
-    pylab.plot(crystal, 100*candor_wavelength_dispersion(L, 6), label="6 mm")
-    pylab.plot(crystal, 100*candor_wavelength_dispersion(L, 4), label="4 mm")
-    pylab.legend()
-    pylab.xlabel("crystal #")
-    pylab.ylabel(r"$\Delta\lambda/\lambda$ (FWHM) %")
-    pylab.title("CANDOR wavelength dispersion")
-    pylab.grid()
-
-def plot_channels(mask=10.):
-    spectrum = load_spectrum()
-    L = spectrum[0]
-    dL = L*candor_wavelength_dispersion(L, mask)/2.35
-    x = np.linspace(4,6,10000)
-    y = [exp(-0.5*(x - Li)**2/dLi**2) for Li, dLi in zip(L,dL)]
-    #pylab.plot(x, np.vstack(y).T)
-    pylab.plot(x, np.sum(np.vstack(y),axis=0))
-    pylab.grid(True)
-
-if False:
-    #plot_dLoL()
-    plot_channels(10)
-    pylab.show()
-    sys.exit()
+    L, I_in = np.loadtxt(os.path.join(datadir, 'CANDOR-incident.dat')).T
+    _, I_out = np.loadtxt(os.path.join(datadir, 'CANDOR-detected.dat')).T
+    return L, I_in, L, I_out/I_in
 
 def pairwise(iterable):
     "s -> (s0, s1), (s2, s3), (s4, s5), ..."
@@ -180,6 +112,7 @@ def comb(n, width, separation):
     edges = np.vstack([centers-width/2, centers+width/2]).T.flatten()
     return edges
 
+# TODO: avoid candor specific properties in simulation engine
 class Neutrons(object):
     #: angle of the x-axis relative to source-sample line (rad)
     beam_angle = 0.
@@ -202,6 +135,10 @@ class Neutrons(object):
     #: source beam for each neutron
     source = None # type: np.ndarray
 
+    @classmethod
+    def set_spectrum(cls, spectrum):
+        cls.spectrum = spectrum
+
     @property
     def x(self):
         return self.xy[1]
@@ -218,31 +155,39 @@ class Neutrons(object):
 
     def __init__(self, n, divergence=5., spectrum=None, trace=False):
         # type: (int, float, np.ndarray, float, Union[float, np.ndarray], bool) -> None
-        self.spectrum = spectrum
-        L, I, _ = spectrum
-        Lmin, Lmax = np.min(L), np.max(L)
-        Iweighted = I/np.sum(I)
+        if spectrum is not None:
+            self.spectrum = spectrum
+        L, I = spectrum[0], spectrum[1]
+        I_weighted = I/np.sum(I)
 
         self.xy = np.zeros((2,n),'d')
         self.angle = (np.random.rand(n)-0.5)*radians(divergence)
-        self.wavelength = np.random.rand(n)*(Lmax - Lmin) + Lmin
-        self.weight = np.interp(self.wavelength, L, Iweighted)
+        self.wavelength = np.random.rand(n)*L.ptp() + L.min()
+        self.weight = np.interp(self.wavelength, L, I_weighted)
         self.active = (self.x == self.x)
 
         self.history = []
         self.trace = trace
         self.elements = []
 
-    def slit_source(self, z, width):
+    def converging_source(self, z, width, sample_low, sample_high):
+        n = self.xy.shape[1]
+        self.z = z
+        x = (np.random.rand(n)-0.5)*width
+        y = ((np.random.rand(n)-0.5)*(sample_high-sample_low)
+             + (sample_high + sample_low)/2)
+        self.x = x
+        self.angle = arctan2(y-x, -z)
+        self.source = 0
+        self.add_trace()
+        self.add_element((z, -width), (z, -width/2))
+        self.add_element((z, width/2), (z, width))
+
+    def slit_source(self, z, width, target=inf):
         n = self.xy.shape[1]
         self.z = z
         self.x = (np.random.rand(n)-0.5)*width
-        ## Aim the center of the divergence at the pre-sample slit position
-        #self.angle += arctan(self.x/(self.z - PRE_SAMPLE_SLIT_Z))
-        ## Aim the center of the divergence at the sample position
-        self.angle += arctan(self.x/self.z)
-        ## Aim the center of the divergence before the sample position
-        #self.angle += arctan(self.x/(self.z - 10))
+        self.angle += arctan(self.x/(self.z - target))
         self.source = 0
         self.add_trace()
         self.add_element((z, -width), (z, -width/2))
@@ -412,7 +357,7 @@ class Neutrons(object):
         self.xy = rotate(self.xy, angle)
         self.angle += angle
 
-    def move(self, z):
+    def move(self, z, add_trace=True):
         """
         Move neutrons to position z.
         """
@@ -420,8 +365,11 @@ class Neutrons(object):
         dz = z - self.z
         self.x = dz*tan(self.angle) + self.x
         self.z = z
+        if add_trace:
+            self.add_trace()
 
-    def sample(self, angle, width=100., offset=0., bow=0.):
+    def sample(self, angle, width=100., offset=0., bow=0., diffuse=0.,
+               refl=lambda kz: np.ones(kz.shape)):
         """
         Reflect off the sample.
 
@@ -436,7 +384,22 @@ class Neutrons(object):
         the height of the sample surface relative at the center of the
         sample relative to the edges. *bow* is positive for samples that
         are convex and negative for concave.
+
+        *diffuse* (unitless) proportion of samples scattered in 4 pi.
+        Note that we are using 2 pi rather than 4 pi for now since our model
+        does not include vertical slits.  For a more complete treatment, the
+        majority of the diffuse scattering events should be treated as
+        absorption events, with only those incident on the solid angle of
+        the detector bank propagated.  The diffuse scattering is proportional
+        to the number of neutrons incident on the sample, not the number
+        reflected, so even small rates of diffuse scattering may lead to
+        significant crosstalk between channels.
+
+        *refl* is a function which takes angle and wavelength, returning
+        proportion of reflected neutrons.  No absorption in this model.
         """
+        if bow != 0.:
+            raise NotImplementedError("sample bow not supported")
         theta = radians(angle)
 
         # Determine where the neutrons intersect the plane through the
@@ -459,9 +422,21 @@ class Neutrons(object):
         p = s*sqrt(xp**2 + zp**2) - offset
         #print("sample position", p)
         hit = (abs(p) < width/2.)
+        dhit = hit & (np.random.rand(*hit.shape) < diffuse)
+
+        # Calculate reflectivity, removing any neutrons that aren't reflected
+        # TODO: maybe interpolate instead
+        kz = 4 * pi * sin(theta - self.angle[hit]) / self.wavelength[hit]
+        r = refl(kz)
+        reflected = (r > np.random.rand(*r.shape))
+        #print(theta, self.angle, self.wavelength, hit, kz, r)
+        #print("reflected", np.mean(kz), np.mean(r), np.sum(reflected)/np.sum(hit),
+        #      np.mean(self.angle), np.max(self.angle), np.min(self.angle))
+        hit[hit] = reflected
 
         # Update the position of the neutrons which hit the sample
         self.angle[hit] = 2*theta - self.angle[hit]
+        self.angle[dhit] = 2 * pi * np.random.rand(*hit.shape)[dhit]
         self.x[hit] = xp[hit]
         self.z[hit] = zp[hit]
         # Move the remaining neutrons to position 0
@@ -481,7 +456,7 @@ class Neutrons(object):
         :param width:
         :return:
         """
-        self.move(z)
+        self.move(z, add_trace=False)
         self.active &= (self.x >= -width/2+offset)
         self.active &= (self.x <= +width/2+offset)
         self.add_trace()
@@ -497,7 +472,7 @@ class Neutrons(object):
         each opening is controlled independently.  The spacing between
         the centers is fixed.
         """
-        self.move(z)
+        self.move(z, add_trace=False)
         self.slit_array(z, comb(n, width, separation))
 
     def slit_array(self, z, edges):
@@ -521,10 +496,97 @@ class Neutrons(object):
         Returns a weight associated with each neutron, which is the predicted
         reflectivity.
         """
-        qk = 4.*pi*sin(radians(self.angle+sample_angle))/self.wavelength
+        qk = 4.*pi*sin(self.angle+radians(sample_angle))/self.wavelength
         rk = np.interp(qk, q, r)
         self.weight *= rk
         return self
+
+def wavelength_dispersion(L, mask=10., detector_distance=DETECTOR_Z):
+    """
+    Return estimated wavelength dispersion for the candor channels.
+
+    *L* (Ang) is the wavelength measured for each channel.
+
+    *mask* (mm) is the mask opening at the start of each detector channel.
+
+    *detector_distance* (mm) is the distance from the center of the sample
+    to the detector mask.
+
+    Note: result is 0.01 below the value shown in Fig 9 of ref.
+
+    Running some approx. numbers to decide if changing the mask will
+    significantly change the resolution::
+
+        dQ/Q @ 1 degree for detectors between 4 A and 6 A
+
+        4 mm:  [0.85 0.73 0.60 0.48 0.36 0.23]
+        10 mm: [0.96 0.85 0.73 0.61 0.50 0.39]
+
+    This value is dominated by the wavelength spread.
+
+    **References**
+
+    Jeremy Cook, "Estimates of maximum CANDOR detector count rates on NG-1"
+    Oct 27, 2015
+    """
+    #: (Ang) d-spacing for graphite (002)
+    dspacing = 3.354
+
+    #: (rad) FWHM mosaic spread for graphite
+    eta = radians(30./60.)  # convert arcseconds to radians
+
+    #: (rad) FWHM incident divergence
+    a0 = mask/detector_distance
+
+    #: (rad) FWHM outgoing divergence
+    a1 = a0 + 2*eta
+
+    #: (rad) bragg angle for wavelength selector
+    theta = arcsin(L/2/dspacing)
+    #pylab.plot(degrees(theta))
+
+    #: (unitless) FWHM dL/L, as given in Eqn 6 of the reference
+    dLoL = (sqrt((a0**2*a1**2 + (a0**2 + a1**2)*eta**2)/(a0**2+a1**2+4*eta**2))
+            / tan(theta))
+    return dLoL
+
+
+def candor_setup():
+    Neutrons.set_spectrum(load_spectrum())
+
+    # Multibeam beam centers and angles
+    # Note: if width is 0, then both edges are at the center
+    beam_centers = comb(4, 0, SOURCE_LOUVER_SEPARATION)[::2]
+    beam_angles = arctan(beam_centers/-SOURCE_LOUVER_Z)
+
+    # Detector bank wavelengths and angles
+    wavelengths = Neutrons.spectrum[0]
+    bank_centers = detector_mask(width=0.)[::2]
+    # Note: assuming flat detector bank; a curved bank will give
+    bank_angles = arctan(bank_centers/DETECTOR_Z)
+    bank_angles += bank_angles[0]
+    #print("bank centers", bank_centers)
+    #print("bank angles", degrees(bank_angles))
+    #print("beam angles", degrees(beam_angles))
+
+    num_leaf = len(wavelengths)
+    num_bank = len(bank_angles)
+    angular_spreads = 2.865*np.ones((1, num_bank*num_leaf))  # from nice vm
+    wavelength_spreads = wavelength_dispersion(wavelengths)
+    wavelength_spreads = 0.01*np.ones((1, num_bank*num_leaf))  # from nice vm
+    #L = 6. - 0.037*np.arange(54)  # from nice vm
+    wavelength_array = np.tile(wavelengths, (num_bank, 1)).T.flatten()
+
+    # Initialize candor with fixed info fields
+    candor = Candor()
+    candor.move(
+        beam_angularOffsets=[degrees(beam_angles)],
+        detectorTable_angularSpreads=[angular_spreads],
+        detectorTable_rowAngularOffsets=[degrees(bank_angles)],
+        detectorTable_wavelengthSpreads=[wavelength_spreads],
+        detectorTable_wavelengths=[wavelength_array],
+    )
+    return candor
 
 def source_divergence(source_slit_z, source_slit_w,
                       sample_slit_z, sample_slit_w,
@@ -537,7 +599,7 @@ def source_divergence(source_slit_z, source_slit_w,
         return arctan2(p2[1]-p1[1], p2[0]-p1[0])
     theta = radians(sample_angle)
     two_theta = radians(detector_angle)
-    # source edgess
+    # source edges
     source_lo = source_slit_z, -0.5*source_slit_w
     source_hi = source_slit_z, +0.5*source_slit_w
     # pre-sample slit edges
@@ -562,43 +624,51 @@ def source_divergence(source_slit_z, source_slit_w,
     else:
         max_angle = max(pre_hi, sample_hi)
         min_angle = min(pre_lo, sample_lo)
-    return max(abs(max_angle), abs(min_angle))
+    return degrees(max(abs(max_angle), abs(min_angle)))
 
-def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
-    source_slit = 3.  # narrow beam
-    #source_slit = 50.  # wide beam
-    #source_slit = 150.  # super-wide beam
-    #sample_width, sample_offset = 100., 0.
-    sample_width, sample_offset, source_slit = 2., 0., 0.02
-    min_sample_angle = theta
-    mask = 0 # 10 mm detector
-    #mask = 3 # 4 mm detector
 
-    comb_z = -1000
-    comb_separation = SOURCE_LOUVER_SEPARATION*comb_z/SOURCE_LOUVER_Z
-    comb_max = comb_separation - 1.
-    comb_min = 0.1
+def simulate(counts, trace=False,
+        sample_width=10., sample_offset=0., sample_diffuse=0.,
+        sample_slit_offset=0.,
+        refl=lambda kz: 1.,
+        ):
+    candor = Candor()
 
-    #sample_angle = min_sample_angle - degrees(SOURCE_LOUVER_ANGLES[0])
-    sample_angle = min_sample_angle
-    detector_angle = 2*sample_angle
-    louver = (radians(sample_angle) + SOURCE_LOUVER_ANGLES)*sample_width
-    louver = abs(louver)
+    # Set derived motors as needed.
+    if candor.Q.wavelength is None:
+        if candor.monoTransMap.key == "IN":
+            candor.Q.wavelength =  candor.mono.wavelength
+        else:
+            bank, leaf = candor.Q.angleIndex, candor.Q.wavelengthIndex
+            candor.Q.wavelength = candor.wavelengths[bank, leaf]
 
-    louver = np.maximum(np.minimum(louver, comb_max), comb_min)
-    comb_width = louver
+    # Retrieve values from candor instrument definition
+    beam_mode = candor.Q.beamMode
+    target_bank = candor.Q.angleIndex
+    target_leaf = candor.Q.wavelengthIndex
+    source_slit = candor.slitAperture1.softPosition
+    sample_slit = candor.slitAperture2.softPosition
+    detector_slit = candor.slitAperture3.softPosition
+    sample_angle = candor.sampleAngleMotor.softPosition
+    detector_angle = candor.detectorTableMotor.softPosition
+    has_converging_guide = candor.convergingGuideMap.key == "IN"
+    has_multibeam = candor.multiSlit1TransMap.key == "IN"
+    has_single = candor.singleSlitApertureMap.key == "IN"
+    detector_mask_width = float(candor.detectorMaskMap.key)
+    has_mono = candor.monoTransMap.key == "IN"
+    wavelength = candor.mono.wavelength
+    wavelength_spread = candor.mono.wavelengthSpread
+    louver = np.array([
+        candor.multiBladeSlit1aMotor.softPosition,
+        candor.multiBladeSlit1bMotor.softPosition,
+        candor.multiBladeSlit1cMotor.softPosition,
+        candor.multiBladeSlit1dMotor.softPosition,
+    ])
 
-    sample_slit = choose_sample_slit(louver, sample_width, sample_angle)
-    sample_slit_offset = 0.
-    #sample_slit *= 0.2
-    sample_slit = sample_width*sin(radians(sample_angle))
-    sample_slit *= 100
-    source_slit = sample_slit
 
-    # Convergent guides remove any effects of slit collimation, and so are
-    # equivalent to sliding the source toward the sample
-    #source_slit_z = SOURCE_SLIT_Z  # no guides
-    source_slit_z = PRE_SAMPLE_SLIT_Z - 10  # converent guides
+    # Proceed with simulation
+    has_sample = (sample_width > 0.)
+    beam_mode = "single" if has_single else "multiple" if has_multibeam else "spread"
 
     # Enough divergence to cover the presample slit from the source aperture
     # Make sure we get the direct beam as well.
@@ -606,54 +676,191 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
     #print("divergence", divergence)
     #divergence = 5
 
-    #detector_slit = sample_slit
+    d2 = source_divergence(
+        SOURCE_SLIT_Z, source_slit,
+        PRE_SAMPLE_SLIT_Z, sample_slit,
+        POST_SAMPLE_SLIT_Z, detector_slit,
+        sample_width, sample_offset,
+        sample_angle, detector_angle,
+        )
+    #divergence = d2
+    #delta_theta *= 10
+
+    if has_mono:
+        L, I = Neutrons.spectrum[0], Neutrons.spectrum[1]
+        rate = np.interp(wavelength, L, I)
+        x = np.linspace(-3, 3, 21)
+        mono_L = x*wavelength_spread/sqrt(log(256)) + wavelength
+        mono_I = rate*exp(-x**2/2)/sqrt(2*pi)
+        spectrum = mono_L, mono_I, Neutrons.spectrum[2:]
+    else:
+        spectrum = Neutrons.spectrum
+
+    #counts = 100
+    n = Neutrons(n=counts, trace=trace, spectrum=spectrum, divergence=divergence)
+    if has_multibeam:
+        # Use source louvers
+        n.comb_source(SOURCE_LOUVER_Z, louver, SOURCE_LOUVER_SEPARATION)
+    elif has_converging_guide:
+        # Convergent guides remove any effects of slit collimation, and so are
+        # equivalent to sliding the source toward the sample
+        # Ignore divergence and use sample footprint to define beam
+        spill = 0.1
+        sample_xs = sample_width*sin(radians(sample_angle))
+        sample_low = sample_xs*(-0.5 - spill + sample_offset/sample_width)
+        sample_high = sample_xs*(0.5 + spill + sample_offset/sample_width)
+        n.converging_source(PRE_SAMPLE_SLIT_Z, sample_slit, sample_low, sample_high)
+    else:
+        # Use fixed width source with given divergence
+        # Aim the center of the divergence at the target position
+        target = PRE_SAMPLE_SLIT_Z
+        #target = POST_SAMPLE_SLIT_Z
+        #target = DETECTOR_Z
+        #target = inf  # target at infinity
+        #target = -10  # just before sample
+        #target = 0  # at the sample
+        #target = 10  # just after sample
+        n.slit_source(SOURCE_SLIT_Z, source_slit, target=target)
+
+    if False and has_multibeam:
+        # Play with a pre-sample comb selector (doesn't exist)
+        comb_z = -1000
+        comb_separation = SOURCE_LOUVER_SEPARATION*comb_z/SOURCE_LOUVER_Z
+        comb_max = comb_separation - 1.
+        comb_min = 0.1
+        comb_width = np.maximum(np.minimum(louver, comb_max), comb_min)
+        n.comb_filter(z=comb_z, n=SOURCE_LOUVER_N, width=comb_width,
+                      separation=comb_separation)
+
+    n.slit(z=PRE_SAMPLE_SLIT_Z, width=sample_slit, offset=sample_slit_offset)
+    #return n
+    if has_sample:
+        n.sample(angle=sample_angle, width=sample_width, offset=sample_offset,
+                 diffuse=sample_diffuse, refl=refl)
+    else:
+        n.move(z=0.)
+    #return n
+    n.detector_angle(angle=detector_angle)
+    #n.clear_trace()
+    n.slit(z=POST_SAMPLE_SLIT_Z, width=detector_slit, offset=sample_slit_offset)
+    if False:
+        # Play with a post-sample comb selector (doesn't exist)
+        n.comb_filter(z=-comb_z, n=SOURCE_LOUVER_N, width=comb_width,
+                      separation=comb_separation)
+    n.move(z=DETECTOR_Z)
+    n.slit_array(z=DETECTOR_Z, edges=detector_mask(detector_mask_width))
+    n.move(z=DETECTOR_Z+1000)
+    #n.angle_hist()
+
+    return n
+
+def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
+    #count = 10
+    sample_width, sample_offset = 100., 0.
+    #sample_width, sample_offset, source_slit = 2., 0., 0.02
+    min_sample_angle = theta
+    #mask = "4"  # 4 mm detector; posiion 3
+    mask = "10"  # 10 mm detector; position 0
+    #sample_diffuse = 0.01
+    sample_diffuse = 0.0
+
+    target_bank = 12  # detector bank to use for angle in Q calculations
+    target_leaf = 2  # detector leaf to use for wavelength in Q calculations
+    target_beam = 1  # beam number (in multibeam mode) to use for Q calculations
+    qx, qz = 0., 0.3
+
+    layers = [
+        # depth rho rhoM thetaM phiM
+        [ 0, 0.0, 0.0, 270, 0],
+        [200, 4.0, 1.0, 359.9, 0.0],
+        [200, 2.0, 1.0, 270, 0.0],
+        [ 0, 4.0, 0.0, 270, 0.0],
+    ]
+    depth, rho, rhoM, thetaM, phiM = zip(*layers)
+    rho = np.array(rho)*1000 #*400
+    #from refl1d import abeles
+    #refl = lambda kz: abs(abeles.refl(kz, depth, rho))**2
+    refl = lambda kz: 0.9*np.ones(kz.shape)
+    #pylab.semilogy(refl(np.linspace(0, 0.2, 1000))); pylab.show(); sys.exit()
+
+    #sample_angle = min_sample_angle - degrees(SOURCE_LOUVER_ANGLES[0])
+    sample_angle = min_sample_angle
+    detector_angle = 2*sample_angle
+
+    sample_slit_offset = 0.
+    #sample_slit = choose_sample_slit(louver, sample_width, sample_angle)
+    sample_slit = sample_width*sin(radians(sample_angle))
+    #sample_slit = DETECTOR_WIDTH/DETECTOR_Z * POST_SAMPLE_SLIT_Z
+    #sample_slit *= 0.2
+    #sample_slit /= 2
+
+    source_slit = sample_slit
+    #source_slit = 3.  # narrow beam
+    #source_slit = 50.  # wide beam
+    #source_slit = 150.  # super-wide beam
+
+    # TODO: should use slitAperture1a, 1b, 1c, 1d instead
+    louver = (radians(sample_angle) + SOURCE_LOUVER_ANGLES)*sample_width
+    louver = abs(louver)
+
+    detector_slit = sample_slit
     #detector_slit = 3*sample_slit
-    detector_slit = sample_slit + (POST_SAMPLE_SLIT_Z - PRE_SAMPLE_SLIT_Z)*tan(radians(divergence))
+    #detector_slit = sample_slit + (POST_SAMPLE_SLIT_Z - PRE_SAMPLE_SLIT_Z)*tan(radians(divergence))
 
     #louver[1:3] = 0.
     #sample_slit = louver[0]*2
     #sample_slit_offset = SOURCE_LOUVER_CENTERS[0]*PRE_SAMPLE_SLIT_Z/SOURCE_LOUVER_Z  # type: float
 
-    delta_theta = source_divergence(source_slit_z, source_slit,
-                      PRE_SAMPLE_SLIT_Z, sample_slit,
-                      POST_SAMPLE_SLIT_Z, detector_slit,
-                      sample_width, sample_offset,
-                      sample_angle, detector_angle,
-                      )
-    #delta_theta *= 10
+    beam_mode = "single"
+    #beam_mode = "converging"
+    #beam_mode = "multiple"
 
-    spectrum = load_spectrum()
-    n = Neutrons(n=count, trace=trace, spectrum=spectrum, divergence=delta_theta)
-    if False:
-        n.comb_source(SOURCE_LOUVER_Z, louver, SOURCE_LOUVER_SEPARATION)
-    else:
-        n.slit_source(source_slit_z, source_slit)
+    wavelength_mode = "white"
+    #wavelength_mode = "mono"
+    wavelength = 4.75
+    wavelength_spread = wavelength*0.01
 
-    if False:
-        n.comb_filter(z=comb_z, n=SOURCE_LOUVER_N, width=comb_width,
-                      separation=comb_separation)
+    candor = Candor()
+    # TODO: should this
+    candor.move(
+        # info fields
+        Q_beamMode="SINGLE_BEAM" if wavelength_mode == "mono" else "WHITE_BEAM",
+        Q_angleIndex=target_bank,
+        Q_wavelengthIndex=target_leaf,
+        Q_wavelength=None,  # value will be set automatically based on mode
+        Q_beamIndex=target_beam,
+        Q_x=qx,
+        Q_z=qz,
+        # slits
+        singleSlitApertureMap="IN" if beam_mode != "multiple" else "OUT",
+        multiSlit1TransMap="IN" if beam_mode == "multiple" else "OUT",
+        multiBladeSlit1aMotor=louver[0],
+        multiBladeSlit1bMotor=louver[1],
+        multiBladeSlit1cMotor=louver[2],
+        multiBladeSlit1dMotor=louver[3],
+        slitAperture1=source_slit,
+        slitAperture2=sample_slit,
+        slitAperture3=detector_slit,
+        detectorMaskMap=mask,
+        convergingGuideMap="IN" if beam_mode == "converging" else "OUT",
+        # angles
+        sampleAngleMotor=sample_angle,
+        detectorTableMotor=detector_angle,
+        # wavelength
+        monoTransMap="IN" if wavelength_mode == "mono" else "OUT",
+        mono_wavelength=wavelength,
+        mono_wavelengthSpread=wavelength_spread,
+        )
 
-    print("sample_slit", sample_slit)
-    n.slit(z=PRE_SAMPLE_SLIT_Z, width=sample_slit, offset=sample_slit_offset)
-    #n.plot_trace(); return
-    if 1:
-        n.sample(angle=sample_angle, width=sample_width, offset=sample_offset)
-    else:
-        n.move(z=0.)
-        n.add_trace()
-    #n.plot_trace(); return
-    n.detector_angle(angle=detector_angle)
-    #n.clear_trace()
-    n.slit(z=POST_SAMPLE_SLIT_Z, width=detector_slit, offset=sample_slit_offset)
-    if False:
-        n.comb_filter(z=-comb_z, n=SOURCE_LOUVER_N, width=comb_width,
-                      separation=comb_separation)
-    n.move(z=DETECTOR_MASK_Z)
-    n.add_trace()
-    n.slit_array(z=DETECTOR_MASK_Z, edges=detector_mask(mask=mask))
-    n.move(z=DETECTOR_MASK_Z+1000)
-    n.add_trace()
-    #n.angle_hist()
+    n = simulate(
+        counts=count,
+        sample_width=sample_width,
+        sample_offset=sample_offset,
+        sample_diffuse=sample_diffuse,
+        sample_slit_offset=sample_slit_offset,
+        refl=refl,  # Should replace this with sample scatter
+        trace=trace,
+    )
 
     if plot:
         n.plot_trace(split=split)
@@ -673,225 +880,8 @@ def scan_demo(count=100):
     pylab.subplot(2, 2, 4)
     single_point_demo(2.5, count)
 
-def resolution_simulator():
-    # s1, s2 are slit openings
-    # theta is sample angle
-    # width is sample width
-    # offset is sample offset from center (horizontal)
-    # beam_height is the vertical size of the beam; this is used to compute
-    # the beam spill from sample disks, the effects of which can be reduced
-    # by setting the beam height significantly below the disk width.
-
-    ## Variants
-    d1, d2 = SOURCE_SLIT_Z, PRE_SAMPLE_SLIT_Z
-    beam_height = 8
-    width=10
-    #offset = -2.
-    offset = 0
-    theta = 3.5
-    s1, s2 = .5, .5
-    #s1, s2 = 5, 5
-    #s1, s2 = 0.15, 0.10 # different slits
-    #s1, s2 = 0.05, 0.10  # different slits
-    #s1, s2, theta = 0.5, 0.5, 3.5  # far out
-    #s1, s2, width = 0.1, 0.01, 4 # extreme slits
-    #s1, s2 = 0.1, 0.2 # extreme slits
-    #s1, s2 = 0.01, 0.1 # extreme slits
-
-    # number of samples
-    n = 1000000
-
-    # use radians internally
-    theta = radians(theta)
-
-    # Maximum angle for any neutron is found by looking at the triangle for a
-    # neutron entering at the bottom of slit 1 and leaving at the top of slit 2.
-    # Simple trig gives the maximum angle we need to consider, with spread going
-    # from negative of that angle to positive of that angle.  Assume all starting
-    # positions and all angles are equiprobable and generate neutrons at angle
-    # phi starting at position x1.
-    spread = 2*arctan(0.5*(s1+s2)/(d2-d1))
-    x1 = np.random.uniform(-s1/2, s1/2, size=n)
-    phi = np.random.uniform(-spread/2, spread/2, size=n)
-
-    # Determine where the neutrons intersect slit 2; tag those that make it through
-    # the slits
-    x2 = (d2-d1)*tan(phi) + x1
-    through = (x2 > -s2/2) & (x2 < s2/2)
-    n_through = np.sum(through)
-
-    # Determine where the neutrons intersect the plane through the center of sample
-    # rotation
-    xs = -d1*tan(phi) + x1
-
-    # Intersection of sample with individual neutrons
-    def intersection(theta, phi, xs):
-        xp = tan(theta) * xs / (tan(theta) - tan(phi))
-        zp = xp / tan(theta)
-        return xp, zp
-    xp, zp = intersection(theta, phi, xs)
-
-    # Find the location on the sample plane of the intercepted neutron.  Note that
-    # this may lie outside the bounds of the sample, so check that it lies within
-    # the sample.  The sample goes from (-w/2 - offset, w/2 - offset)
-    z = sign(xp)*sqrt(xp**2 + zp**2) - offset
-    hit = through & (abs(z) < width/2.)
-    n_hit = np.sum(hit)
-
-    # If phi > theta then the neutron must have come in from the back.  If it
-    # hits the sample as well, then we need to deal with refraction (if it hits
-    # the side) or reflection (if it is low angle and not transmitted).  Let's
-    # count the number that hit the back of the sample.
-    n_backside = np.sum((phi > theta)[hit])
-
-    # For disk-shaped samples, weight according to chord length.  That is, for a
-    # particular x position on the sample, r^2 = x^2 + y^2, chord length is 2*y.
-    # Full intensity will be at the sample width, 2*r.
-    # Ratio w = (r^2 - x^2)/r^2 = 1 - (x/r)^2.
-    w = 1 - (2*z/width)**2
-    # For ribbon beams (limited y), the total beam intensity only drops when
-    # the ribbon width is greater than the chord length.  Rescale the chord
-    # lengths to be relative to the beam height rather than the sample diameter
-    # and clip anything bigger than one.  If the beam height is bigger than
-    # the sample width, this will lead to beam spill even at the center.
-    # Note: Could do the same for square samples.
-    if np.isfinite(beam_height):
-        w *= width/beam_height
-        w[w>1] = 1
-    #w = 1 - (np.minimum(abs(2*z), beam_height)/min(width, beam_height))**2
-    w[w<0] = 0.
-    weight = sqrt(w)
-    n_hit_disk = np.sum(hit*weight)
-
-    # End points of the sample
-    sz1,sx1 = (-width/2+offset)*cos(theta), (-width/2+offset)*sin(theta)
-    sz2,sx2 = (+width/2+offset)*cos(theta), (+width/2+offset)*sin(theta)
-
-    # Simplified intersection: sample projects onto sample position
-    hit_proj = through & (xs > sx1) & (xs < sx2)
-    n_hit_proj = np.sum(hit_proj)
-
-    # Simplified disk intersection: weight by the projection of the disk
-    z_proj = xs / sin(theta) - offset
-    w = 1 - (2*z_proj/width)**2
-    w[w<0] = 0.
-    weight_proj = sqrt(w)
-    n_hit_disk_proj = np.sum(hit_proj*weight_proj)
-
-    # beam profile is a trapezoid, 0 where a neutron entering at -s1/2 just
-    # misses s2/2, and 1 where a neutron entering at s1/2 just misses s2/2.
-    h1 = abs(d1/(d1-d2))*(s1+s2)/2 - s1/2
-    h2 = abs(-abs(d1/(d1-d2))*(s1-s2)/2 + s1/2)
-    profile = [-h1, -h2, h2, h1], [0, 1, 1, 0]
-
-    # Compute divergence from slits and from sample
-    def fwhm2sigma(s):
-        return s/sqrt(8*log(2))  # gaussian
-        #return s*sqrt(2/9.)       # triangular
-    dT_beam = fwhm2sigma(degrees(0.5*(s1+s2)/abs(d1-d2)))
-    dT_s1_sample = fwhm2sigma(degrees(0.5*(s1+width*sin(theta))))
-    dT_s2_sample = fwhm2sigma(degrees(0.5*(s2+width*sin(theta))))
-
-    dT_sample = min([dT_beam, dT_s1_sample, dT_s2_sample])
-    dT_est = degrees(std(phi[hit]))
-    # use resample to estimate divergence from disk-shaped sample
-    resample = np.random.choice(phi[hit],p=weight[hit]/np.sum(weight[hit]),size=1000000)
-    dT_disk = degrees(std(resample))
-
-    # Hits on z_proj should match hits directly on z
-    hit_proj_z = through & (abs(z_proj) < width/2.)
-    assert (hit_proj == hit_proj_z).all()
-
-    # Bins to use for intensity vs. position x at the center of rotation
-    # The scale factor for the estimated counts comes from setting the
-    # area of the beam trapezoid to the total number of neutrons that pass
-    # through slit 2.  One should also be able to estimate this by integrating
-    # the intensity at each point xs in bin k from its contribution from points
-    # at x1, decreased over the distance d1 by the angular spread, but I couldn't
-    # work out the details properly.
-    bins = np.linspace(min(xs[through]),max(xs[through]),51)
-    scale = (bins[1]-bins[0])*n_through/(h1+h2)
-    beam = np.interp(bins, profile[0], profile[1], left=0, right=0) * scale
-    rect = np.interp(bins, [sx1, sx2], [1, 1], left=0, right=0) * beam
-    bins_z = bins / sin(theta) - offset
-    bins_w = 1 - (2*bins_z/width)**2
-    bins_w[bins_w < 0] = 0.
-    disk = sqrt(bins_w) * beam
-
-    phi_bins = degrees(np.linspace(min(phi[through]),max(phi[through]),51))
-    phi_max = degrees(arctan(0.5*(s1+s2)/abs(d1-d2)))
-    phi_flat = degrees(arctan(0.5*abs((s1-s2)/(d1-d2))))
-    phi_scale = n_through/(phi_max+phi_flat)*(phi_bins[1]-phi_bins[0])
-    def trapezoidal_variance(a, b):
-        """
-        Variance of a symmetric trapezoidal distribution.
-
-        The trapezoid slopes up in (-b, -a), is flat in (-a, a) and slopes
-        down in (a, b).
-        """
-        tails = (b-a)/6*(3*a**2 + 2*a*b + b**2)
-        flat = (2/3)*a**3
-        return (tails + flat)/(a+b)
-    def trapezoidal_divergence(s1, s2, d1, d2):
-        phi_max = degrees(arctan(0.5*(s1+s2)/abs(d1-d2)))
-        phi_flat = degrees(arctan(0.5*abs(s1-s2)/abs(d1-d2)))
-        return sqrt(trapezoidal_variance(phi_flat, phi_max))
-    dT_beam_trap = sqrt(trapezoidal_variance(phi_flat, phi_max))
-    dT_beam_est = np.std(degrees(phi[through]))
-
-    print("spread: %f deg" % degrees(spread))
-    print("acceptance: %.2f%%" % (n_through*100./n))
-    print("footprint: %.2f%%, disk: %.2f%%" % (100*n_hit/n_through, 100*n_hit_disk/n_through))
-    print("projection: %.2f%%, disk: %.2f%%" % (100*n_hit_proj/n_through, 100*n_hit_disk_proj/n_through))
-    print("backside: %.2f%%" % (n_backside*100./n_through))
-    print("dT beam: traditional %f  trapezoidal %f  estimated %f" % (dT_beam, dT_beam_trap, dT_beam_est))
-    print("dT sample: %f  est: %f  disk: %f" % (dT_sample, dT_est, dT_disk))
-
-
-    from pylab import subplot, hist, plot, legend, grid, show, xlabel
-
-    subplot(221)
-    #hist(xs[through], bins=bins, label="beam"); xlabel("x (mm)")
-    #plot(bins, beam, '-r', label="_")
-    #hist(x2, bins=bins, label="x2", alpha=0.5)
-    #hist(xs, bins=bins, label="xs", alpha=0.5)
-    hist(degrees(phi[through]), bins=phi_bins, label="beam"); xlabel("phi (deg)")
-    plot([-phi_max, -phi_flat, phi_flat, phi_max], [0, phi_scale, phi_scale, 0], '-r', label="_")
-    grid(True); legend()
-    subplot(223)
-    #hist(xs[hit], bins=bins, label="sample"); xlabel("x (mm)")
-    #plot(bins, rect, '-r', label="_")
-    hist(degrees(phi[hit]), bins=phi_bins, label="sample"); xlabel("phi (deg)")
-    grid(True); legend()
-    subplot(224)
-    #hist(xs[hit], bins=bins, weights=weight[hit], label="disk"); xlabel("x (mm)")
-    #plot(bins, disk, '-r', label="_")
-    hist(degrees(phi[hit]), bins=phi_bins, weights=weight[hit], label="disk"); xlabel("phi (deg)")
-    grid(True); legend()
-    subplot(222)
-    if False:  # plot collision points
-        plot(zp[hit][:1000], xp[hit][:1000], '.')
-        plot(zp[through&~hit][:1000], xp[through&~hit][:1000], '.', color=(0.8,0.,0.))
-        #plot(zp[~through][:1000], xp[~through][:1000], '.', color=(0.5,0.5,0.5))
-        plot([sz1,sz2],[sx1,sx2], '-', color=(0.0, 0.8, 0.0))  # sample edges
-    else:
-        # set p to position on sample of the hit
-        p = z + width/2
-        pmin, pmax = p[through].min(), p[through].max()
-        # find beam spill from disk
-        spill_weight = 1 - weight
-        spill_weight[~hit] = 1
-        spill_weight[~through] = 0
-        bins = np.linspace(pmin, pmax, 100)
-        hist(p[hit], label="sample", bins=bins)
-        hist(p[hit], label="disk", weights=weight[hit], bins=bins)
-        #hist(p, label="dspill", weights=spill_weight, bins=bins)
-        hist(p[through&~hit], label="spill", bins=bins)
-        legend()
-    show()
-
 def main():
-    #resolution_simulator()
+    candor_setup()
     if len(sys.argv) < 2:
         print("incident angle in degrees required")
         sys.exit(1)

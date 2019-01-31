@@ -11,7 +11,6 @@ from typing import Dict, List, Tuple, Any, Optional, Union
 from numpy import inf
 import numpy as np
 
-
 class Device(object):
     # Note: using "private" names for device level properties so that the
     # node names can be used without conflict.  In particular, the
@@ -21,6 +20,7 @@ class Device(object):
     _nodes = None  # type: Dict[str, Dict[str, Any]]
     _type = None # type: str
     _primary = None # type: str
+    _device_id = None # type: str
 
     def get_config(self):
         # type: () -> Dict[str, Any]
@@ -33,41 +33,55 @@ class Device(object):
             result["primary"] = self._primary
         return result
 
-    def get_data(self, name):
+    def get_data(self):
         # type: () -> Dict[str, Any]
-        result = dict((name+'.'+k, getattr(self, k)) for k in self._nodes)
+        """
+        Return {"device.node": value} for all nodes in the device.
+
+        The name is passed in since the device does not know its own name.
+        """
+        result = {self._device_id + '.' + k: getattr(self, k)
+                  for k in self._nodes}
         return result
 
-    def set_data(self, **args):
-        for k, v in args.items():
-            if k not in self._nodes:
-                raise AttributeError("Node %s is not in device"%k)
-            setattr(self, k, v)
+    def __setattr__(self, name, value):
+        # type: (str, Any) -> None
+        # __setattr__ serves two purposes:
+        # (1) only fields in nodes can be assigned.
+        # (2) assignment automatically converts number lists to arrays
+        # We could do even more type checking if we wanted, since nodes
+        # should all have types associated with them.
 
+        if name.startswith('_'):
+            pass
+        else:
+            node = self._nodes.get(name, None)
+            if node is None:
+                raise AttributeError("Device %s has no node %s"
+                                     %(self._device_id, name))
+            dtype = node['type']
+            if dtype.endswith('[]'):
+                if dtype.startswith('int'):
+                    value = np.asarray(value, 'i')
+                elif dtype.startswith('float'):
+                    value = np.asarray(value, 'd')
+        #print("setting", name, "to", repr(value), "in", self._type)
+        self.__dict__[name] = value
 
 class Virtual(Device):
     _type = "virtual"
-    _data = None  # type: Dict[str, Any]
 
-    def __init__(self, description, primary=None, fields=None, data=None, type="virtual"):
+    def __init__(self, description, primary=None, fields=None, default=None, type="virtual"):
         # type (str, Optional[str], Dict[str, Dict[str, Any]], Dict[str, Any]) -> None
         self._description = description
         self._primary = primary
         self._nodes = fields
-        self._data = {} if data is None else data.copy()
-        for k in self._nodes:
-            self._data.setdefault(k, None)
         self._type = type
-
-    def get_data(self, name):
-        return dict((name+"."+k, v) for k, v in self._data.items())
-
-    def set_data(self, **args):
-        for k, v in args.items():
-            if k not in self._data:
-                raise AttributeError("Node %s is not in device"%k)
-            self._data[k] = v
-
+        for k in self._nodes:
+            setattr(self, k, None)
+        if default is not None:
+            for k, v in default.items():
+                setattr(self, k, v)
 
 class Experiment(Device):
     _type = "data"
@@ -498,7 +512,7 @@ class InOut(Device):
     _type = "map"
     _primary = "key"
 
-    key = 0
+    key = "OUT"
     map = None  # type: List[Any]
 
     def __init__(self, label):
@@ -530,7 +544,6 @@ class Map(Device):
 
     def __init__(self, label, description, types, map=None):
         # type: (str, str, Tuple[str, str]) -> None
-        self.map = [] if map is None else map
         self._description = description
         self._nodes = {
             "key": {
@@ -547,6 +560,7 @@ class Map(Device):
                 "type": "map<%s,%s>"%(types)
             }
         }
+        self.map = [] if map is None else map
 
 
 class RateMeter(Device):
@@ -980,6 +994,15 @@ class Motor(Device):
 
 
 class Instrument(object):
+    """
+    NICE instrument definition.
+
+    Note that instrument is a singleton: modifying the position of a motor for
+    an instrument will modify it for every instance of that instrument.  This
+    is enforced programmatically by having the constructor return the same
+    instance each time the instrument is requested.
+    """
+    _singleton = None # type: Instrument
     nexus = None  # type: Dict[str, Any]
     experiment = None  # type: Experiment
     trajectory = None  # type: Trajectory
@@ -991,6 +1014,11 @@ class Instrument(object):
     trajectoryID = 0
     last_data = None # type: Dict[str, Any]
 
+    def __new__(cls, *args, **kwargs):
+        if not isinstance(cls._singleton, cls):
+            cls._singleton = object.__new__(cls, *args, **kwargs)
+        return cls._singleton
+
     def __init__(self):
         self.last_data = {}
         # derived class should define these
@@ -998,27 +1026,65 @@ class Instrument(object):
         #self.trajectory = Trajectory()
         #self.trajectoryData = TrajectoryData()
 
+    @classmethod
+    def set_device_ids(cls):
+        for k, v in cls.__dict__.items():
+            if isinstance(v, Device):
+                v._device_id = k
+
     def devices(self):
         # type: () -> Dict[str, Device]
-        result = dict((k, getattr(self, k)) for k in dir(self))
-        result = dict((k, v) for k, v in result.items() if isinstance(v, Device))
+        """
+        Return the list of devices in the instrument.
+        """
+        result = {k: getattr(self, k) for k in dir(self)}
+        result = {k: v for k, v in result.items() if isinstance(v, Device)}
 
         # python 3.7 local capture syntax
-        #result = dict((k, v) for k in dir(self)
-        #              if isinstance(v := getattr(self, k), Device))
+        #result = {k: v for k in dir(self)
+        #          if isinstance(v := getattr(self, k), Device)}
         return result
 
     def device_config(self):
         # type: () -> Dict[str, Any]
-        devices = dict((k, v.get_config()) for k, v in self.devices().items())
+        """
+        Return the device config in JSON-ready form.
+        """
+        devices = {k: v.get_config() for k, v in self.devices().items()}
         return devices
 
     def get_data(self):
         # type: () -> Dict[str, Any]
+        """
+        Return {"device.node": value} for all nodes in the instrument.
+
+        The returned value should be JSON-ready, with arrays represented
+        as lists.
+        """
         result = {}
         for k, v in self.devices().items():
-            result.update(v.get_data(k))
+            result.update(v.get_data())
+        # Return arrays as lists.  This is to protect against a node being
+        # set directly as "instrument.field.node = array".
+        result = {k: (v.tolist() if isinstance(v, np.ndarray) else v)
+                  for k, v in result.items()}
         return result
+
+    def set_data(self, data):
+        # type: () -> Dict[str, Any]
+        """
+        Update nodes from data containing {"device.node": value}.
+
+        Lists will automatically be converted to arrays.
+        """
+        for k, v in data.items():
+            device_id, node_id = k.split('.', 1)
+            device = getattr(self, device_id, None)  # type: Device
+            if device is None:
+                raise AttributeError("Device %s does not exist", device_id)
+            if node_id not in getattr(device, '_nodes'):
+                raise AttributeError("Node %s.%s does not exist", device_id, node_id)
+            setattr(device, node_id, v)
 
     def get_delta(self):
         # type: () -> Dict[str, Any]
@@ -1027,19 +1093,33 @@ class Instrument(object):
         called. The delta is reset on :meth:`config_record`.
         """
         data = self.get_data()
-        result = dict((k, v) for k, v in data.items()
-                      if v != self.last_data.get(k, None))
+        result = {k: v for k, v in data.items()
+                  if v != self.last_data.get(k, None)}
         self.last_data = data
         return result
 
     def move(self, **args):
         # type: (Any...) -> None
+        """
+        Move a set of nodes indicated by device_node, or device primary if
+        only dvice is set.
+        """
         for k, v in args.items():
-            if isinstance(v, np.ndarray):
-                v = v.tolist()
-            device_id, node_id = k.split('_', 1)
-            device = getattr(self, device_id)  # type: Device
-            device.set_data(**{node_id: v})
+            device_id, node_id = k.split('_', 1) if '_' in k else (k, None)
+            device = getattr(self, device_id, None)  # type: Device
+            if device is None:
+                raise AttributeError("Device %s does not exist" % device_id)
+            if node_id is None:
+                node_id = getattr(device, '_primary')
+            if node_id is None:
+                raise AttributeError("Device %s has no primary node" % device_id)
+            if node_id not in getattr(device, '_nodes'):
+                raise AttributeError("Node %s.%s does not exist"%(device_id, node_id))
+            # Special handling for moving motors
+            # TODO: add noise to softPosition if not already within tolerance
+            if node_id == 'softPosition':
+                setattr(device, 'desiredSoftPosition', v)
+            setattr(device, node_id, v)
 
     def config_record(self, timestamp):
         # type: (int) -> Dict[str, Any]
