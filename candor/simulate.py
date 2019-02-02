@@ -6,10 +6,11 @@ from __future__ import division, print_function
 
 import sys
 import os
+from warnings import warn
 
 import numpy as np
 from numpy import (sin, cos, tan, arcsin, arccos, arctan, arctan2, radians, degrees,
-                   sign, sqrt, exp, log, std)
+                   sign, sqrt, exp, log)
 from numpy import pi, inf
 import pylab
 
@@ -586,6 +587,18 @@ def candor_setup():
         detectorTable_wavelengthSpreads=[wavelength_spreads],
         detectorTable_wavelengths=[wavelength_array],
     )
+
+    # Initialize default values
+    candor.move(
+        Q_angleIndex=0,
+        Q_wavelengthIndex=0,
+        Q_beamIndex=0,
+        multiSlit1TransMap="OUT",
+        singleSlitApertureMap="IN",
+        monoTransMap="OUT",
+        mono_wavelength=4.75,
+        mono_wavelengthSpread=0.01,
+    )
     return candor
 
 def source_divergence(source_slit_z, source_slit_w,
@@ -626,6 +639,129 @@ def source_divergence(source_slit_z, source_slit_w,
         min_angle = min(pre_lo, sample_lo)
     return degrees(max(abs(max_angle), abs(min_angle)))
 
+def angle_to_qxz(sample_theta, detector_theta, sample_lambda=5., detector_lambda=5.):
+    lambda_i, lambda_f = sample_lambda, detector_lambda
+    theta_i, theta_f = 0. - sample_theta, detector_theta - sample_theta
+    k_ix = 2 * pi / lambda_i * cos(radians(theta_i))
+    k_iz = 2 * pi / lambda_i * sin(radians(theta_i))
+    k_fx = 2 * pi / lambda_f * cos(radians(theta_f))
+    k_fz = 2 * pi / lambda_f * sin(radians(theta_f))
+    qx = k_fx - k_ix
+    qz = k_fz - k_iz
+    return qx, qz
+
+def clip_angle(theta):
+    return np.remainder(theta + 180, 360) - 180
+
+def same_sign(x, y):
+    return sign(x) == sign(y) or abs(x) < 1e-10 or abs(y) < 1e-10
+
+def qxz_to_angle(qx, qz, sample_lambda=5., detector_lambda=5.):
+    # Use zero angles for q near zero
+    if abs(qx) < 1e-10 and abs(qz) < 1e-10:
+        return 0., 0.
+    lambda_i, lambda_f = sample_lambda, detector_lambda
+    kx, kz = qx/(2*pi), qz/(2*pi)
+
+    # Construct quadratic solution parts
+    X, Z = kx*lambda_i, kz*lambda_i
+    C = (lambda_i/lambda_f)**2
+    discriminant = 2*(C+1)*(X**2+Z**2) - (X**2 + Z**2)**2 - (C-1)**2
+    if discriminant < 0:
+        warn("unsolvable position (qx, qz) = (%g,%g); discriminant is %g"
+             %(qx, qz, discriminant))
+        discriminant = 0.
+    scale = 2*X - (X**2 + Z**2) + (C - 1)
+
+    # Plus root discriminant solution
+    theta_ip = 2*arctan2(2*Z + sqrt(discriminant), scale)
+    theta_fp = arcsin(kz*lambda_f + lambda_f/lambda_i*sin(theta_ip))
+    sample_theta_p = clip_angle(degrees(-theta_ip))
+    detector_theta_p = clip_angle(degrees(theta_fp - theta_ip))
+    same_sign_p = same_sign(sample_theta_p, detector_theta_p)
+    distance_p = sqrt(sample_theta_p**2 + detector_theta_p**2)
+    result_p = sample_theta_p, detector_theta_p
+
+    # Minus root discriminant solution
+    theta_im = 2*arctan2(2*Z - sqrt(discriminant), scale)
+    theta_fm = arcsin(kz*lambda_f + lambda_f/lambda_i*sin(theta_im))
+    sample_theta_m = clip_angle(degrees(-theta_im))
+    detector_theta_m = clip_angle(degrees(theta_fm - theta_im))
+    same_sign_m = same_sign(sample_theta_m, detector_theta_m)
+    distance_m = sqrt(sample_theta_m**2 + detector_theta_m**2)
+    result_m = sample_theta_m, detector_theta_m
+
+    # Prefer solution with with the same sign on the angles, or the one with
+    # the smallest angles.  Treat values near zero is treated as the sign of
+    # the other value.  Works for random
+    #print(result_m, result_p)
+    if same_sign_m == same_sign_p:
+        return result_p if distance_p <= distance_m else result_m
+    elif same_sign_p:
+        return result_p
+    elif same_sign_m:
+        return result_m
+    else:
+        raise RuntimeError("unreachable code")
+
+def qxz_to_angle_nice(qx, qz, sample_lambda=5., detector_lambda=5.):
+    # Use zero angles for q near zero
+    if abs(qx) < 1e-10 and abs(qz) < 1e-10:
+        return 0., 0.
+    lambda_i, lambda_f = sample_lambda, detector_lambda
+    k_i, k_f = 2 * pi / lambda_i, 2 * pi / lambda_f
+    qsq = qx**2 + qy**2
+    A = k_f**2 + k_i**2 - qsq
+    zl = - qz * A / (2 * qsq)
+    zrsq = zl**2 + qx**2 * k_i**2 / qsq - (A/2)**2 / qsq
+    zr =sqrt(zrsq)
+
+    z_p = zl + zr
+    x_p = -(A + 2*qz*z_p)/(2 * qx)
+    sample_theta_p = arctan2(z_p, -x_p)
+    detector_theta_p = arctan2(qz - z_p, qx - x_p) + sample_theta_p
+    sample_theta_p = clip_angle(degrees(sample_theta_p))
+    detector_theta_p = clip_angle(degrees(detector_theta_p))
+    same_sign_p = same_sign(sample_theta_p, detector_theta_p)
+    distance_p = sqrt(sample_theta_p**2 + detector_theta_p**2)
+    result_p = sample_theta_p, detector_theta_p
+
+    z_m = zl - zr
+    x_m = -(A + 2*qz*z_m)/(2 * qx)
+    sample_theta_m = arctan2(z_m, -x_m)
+    detector_theta_m = arctan2(qz - z_m, qx - x_m) + sample_theta_m
+    sample_theta_m = clip_angle(degrees(sample_theta_m))
+    detector_theta_m = clip_angle(degrees(detector_theta_m))
+    same_sign_m = same_sign(sample_theta_m, detector_theta_m)
+    distance_m = sqrt(sample_theta_m**2 + detector_theta_m**2)
+    result_m = sample_theta_m, detector_theta_m
+
+    # Prefer solution with with the same sign on the angles, or the one with
+    # the smallest angles.  Treat values near zero is treated as the sign of
+    # the other value.  Works for random
+    #print(result_m, result_p)
+    if same_sign_m == same_sign_p:
+        return result_p if distance_p <= distance_m else result_m
+    elif same_sign_p:
+        return result_p
+    elif same_sign_m:
+        return result_m
+    else:
+        raise RuntimeError("unreachable code")
+
+def _check_qxz_to_angle():
+    wavelengths = 4.0, 5.0
+    # random angles in [-45, +45], with incident matching reflected
+    angles = np.random.rand(2)*45*np.random.choice([-1, 1])
+    #angles[0] = 0
+    #angles[1] = 0
+    qxz = angle_to_qxz(angles[0], angles[1], wavelengths[0], wavelengths[1])
+    result = qxz_to_angle(qxz[0], qxz[1], wavelengths[0], wavelengths[1])
+    error = np.linalg.norm(angles - result)
+    if error > 1e-8:
+         print("round trip fails for (%g, %g) => (%g, %g)"
+               % (angles[0], angles[1], result[0], result[1]))
+    #assert error < 1e-8
 
 def simulate(counts, trace=False,
         sample_width=10., sample_offset=0., sample_diffuse=0.,
@@ -634,30 +770,13 @@ def simulate(counts, trace=False,
         ):
     candor = Candor()
 
-    # Set derived motors as needed.
-    if candor.Q.wavelength is None:
-        if candor.monoTransMap.key == "IN":
-            candor.Q.wavelength =  candor.mono.wavelength
-        else:
-            bank, leaf = candor.Q.angleIndex, candor.Q.wavelengthIndex
-            candor.Q.wavelength = candor.wavelengths[bank, leaf]
-
     # Retrieve values from candor instrument definition
     beam_mode = candor.Q.beamMode
-    target_bank = candor.Q.angleIndex
-    target_leaf = candor.Q.wavelengthIndex
+
     source_slit = candor.slitAperture1.softPosition
     sample_slit = candor.slitAperture2.softPosition
     detector_slit = candor.slitAperture3.softPosition
-    sample_angle = candor.sampleAngleMotor.softPosition
-    detector_angle = candor.detectorTableMotor.softPosition
-    has_converging_guide = candor.convergingGuideMap.key == "IN"
-    has_multibeam = candor.multiSlit1TransMap.key == "IN"
-    has_single = candor.singleSlitApertureMap.key == "IN"
     detector_mask_width = float(candor.detectorMaskMap.key)
-    has_mono = candor.monoTransMap.key == "IN"
-    wavelength = candor.mono.wavelength
-    wavelength_spread = candor.mono.wavelengthSpread
     louver = np.array([
         candor.multiBladeSlit1aMotor.softPosition,
         candor.multiBladeSlit1bMotor.softPosition,
@@ -665,6 +784,43 @@ def simulate(counts, trace=False,
         candor.multiBladeSlit1dMotor.softPosition,
     ])
 
+    target_bank = candor.Q.angleIndex
+    target_leaf = candor.Q.wavelengthIndex
+    source_beam = candor.Q.beamIndex
+    sample_angle = candor.sampleAngleMotor.softPosition
+    detector_angle = candor.detectorTableMotor.softPosition
+
+    has_converging_guide = candor.convergingGuideMap.key == "IN"
+    has_multibeam = candor.multiSlit1TransMap.key == "IN"
+    has_single = candor.singleSlitApertureMap.key == "IN"
+    has_mono = candor.monoTransMap.key == "IN"
+    mono_wavelength = candor.mono.wavelength
+    mono_wavelength_spread = candor.mono.wavelengthSpread
+
+    beam_offset = candor.beam.angularOffsets[0, source_beam]
+    bank_angle = candor.detectorTable.rowAngularOffsets[0, target_bank]
+    target_wavelength = candor.wavelengths[target_bank, target_leaf]
+
+    # Set derived motors as needed.
+    if candor.Q.wavelength is None:
+        # TODO: check this
+        candor.Q.wavelength = (mono_wavelength if has_mono
+                               else candor.wavelengths[target_bank, target_leaf])
+
+    lambda_i = mono_wavelength if has_mono else target_wavelength
+    lambda_f = target_wavelength
+    if candor.Q.x is None or candor.Q.z is None:
+        theta_i = sample_angle + beam_offset
+        theta_f = detector_angle + bank_angle
+        qx, qz = angle_to_qxz(theta_i, theta_f, lambda_i, lambda_f)
+        candor.Q.x, candor.Q.z = qx, qz
+    if sample_angle is None or detector_angle is None:
+        L = target_wavelength
+        qx, qz = candor.Q.x, candor.Q.z
+        theta_i, theta_f = qxz_to_angle(qx, qz, lambda_i, lambda_f)
+        sample_angle = theta_i - beam_offset
+        detector_angle = theta_f - bank_angle
+        candor.move(sampleAngleMotor=sample_angle, detectorTableMotor=detector_angle)
 
     # Proceed with simulation
     has_sample = (sample_width > 0.)
@@ -688,9 +844,9 @@ def simulate(counts, trace=False,
 
     if has_mono:
         L, I = Neutrons.spectrum[0], Neutrons.spectrum[1]
-        rate = np.interp(wavelength, L, I)
+        rate = np.interp(mono_wavelength, L, I)
         x = np.linspace(-3, 3, 21)
-        mono_L = x*wavelength_spread/sqrt(log(256)) + wavelength
+        mono_L = x*mono_wavelength_spread/sqrt(log(256)) + mono_wavelength
         mono_I = rate*exp(-x**2/2)/sqrt(2*pi)
         spectrum = mono_L, mono_I, Neutrons.spectrum[2:]
     else:
@@ -767,7 +923,6 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
     target_bank = 12  # detector bank to use for angle in Q calculations
     target_leaf = 2  # detector leaf to use for wavelength in Q calculations
     target_beam = 1  # beam number (in multibeam mode) to use for Q calculations
-    qx, qz = 0., 0.3
 
     layers = [
         # depth rho rhoM thetaM phiM
@@ -786,6 +941,7 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
     #sample_angle = min_sample_angle - degrees(SOURCE_LOUVER_ANGLES[0])
     sample_angle = min_sample_angle
     detector_angle = 2*sample_angle
+    qx, qz = 0., 0.3
 
     sample_slit_offset = 0.
     #sample_slit = choose_sample_slit(louver, sample_width, sample_angle)
@@ -821,7 +977,7 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
     wavelength_spread = wavelength*0.01
 
     candor = Candor()
-    # TODO: should this
+    #sample_angle, detector_angle = None, None
     candor.move(
         # info fields
         Q_beamMode="SINGLE_BEAM" if wavelength_mode == "mono" else "WHITE_BEAM",
