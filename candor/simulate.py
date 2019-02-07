@@ -45,16 +45,10 @@ class Neutrons(object):
     weight = None # type: np.ndarray
     #: set of neutrons masked by slits
     active = None  # type: np.ndarray
-    #: 54 x 3 array of lambda, incident intensity (n/cm^2), detected intensity
-    spectrum = None # type: np.ndarray
     #: sample angle if there is a sample in the beam
     sample_angle = 0.
     #: source beam for each neutron
     source = None # type: np.ndarray
-
-    @classmethod
-    def set_spectrum(cls, spectrum):
-        cls.spectrum = spectrum
 
     @property
     def x(self):
@@ -72,8 +66,6 @@ class Neutrons(object):
 
     def __init__(self, n, divergence=5., spectrum=None, trace=False):
         # type: (int, float, np.ndarray, float, Union[float, np.ndarray], bool) -> None
-        if spectrum is not None:
-            self.spectrum = spectrum
         L, I = spectrum[0], spectrum[1]
         I_weighted = I/np.sum(I)
 
@@ -735,14 +727,14 @@ def simulate(counts, trace=False,
     #delta_theta *= 10
 
     if has_mono:
-        L, I = Neutrons.spectrum[0], Neutrons.spectrum[1]
+        L, I = candor.spectrum[0], candor.spectrum[1]
         rate = np.interp(mono_wavelength, L, I)
         x = np.linspace(-3, 3, 21)
         mono_L = x*mono_wavelength_spread/sqrt(log(256)) + mono_wavelength
         mono_I = rate*exp(-x**2/2)/sqrt(2*pi)
-        spectrum = mono_L, mono_I, Neutrons.spectrum[2:]
+        spectrum = mono_L, mono_I, candor.spectrum[2:]
     else:
-        spectrum = Neutrons.spectrum
+        spectrum = candor.spectrum
 
     #counts = 100
     n = Neutrons(n=counts, trace=trace, spectrum=spectrum, divergence=divergence)
@@ -945,7 +937,6 @@ def scan_demo(count=100):
 
 def main():
     candor_setup()
-    Neutrons.set_spectrum(Candor.spectrum)
     if len(sys.argv) < 2:
         print("incident angle in degrees required")
         sys.exit(1)
