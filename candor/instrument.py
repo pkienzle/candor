@@ -1,7 +1,9 @@
 # This program is public domain
 # Author: Paul Kienzle
+import os.path
 
 import numpy as np
+from numpy import degrees, radians, arctan, arcsin, tan, sqrt
 
 from .nice import (Motor, Map, Virtual, Instrument, InOut, Counter, Detector,
                    RateMeter, Experiment, Trajectory, TrajectoryData)
@@ -495,16 +497,36 @@ devices = {
 }
 
 class Candor(Instrument):
-    # virtual Q
+    # dimensions in millimeters
+    MONOCHROMATOR_Z = -5216.5
+    SOURCE_APERTURE_Z = -4600. # TODO: missing this number
+    SOURCE_APERTURE = 60.
+    SOURCE_LOUVER_Z = -4403.026
+    SOURCE_LOUVER_N = 4
+    SOURCE_LOUVER_SEPARATION = 15.5  # center-center distance for source multi-slits
+    SOURCE_LOUVER_MAX = 14.5  # maximum opening for source multi-slit
+    SOURCE_SLIT_Z = -4335.86
+    PRE_SAMPLE_SLIT_Z = -356.0
+    POST_SAMPLE_SLIT_Z = 356.0
+    DETECTOR_MASK_HEIGHT = 30.
+    DETECTOR_MASK_WIDTHS = [10., 8., 6., 4.]
+    DETECTOR_MASK_N = 30
+    DETECTOR_MASK_SEPARATION = 12.84
+    DETECTOR_Z = 3496.
+    DETECTOR_WIDTH = (DETECTOR_MASK_N+1)*DETECTOR_MASK_SEPARATION
+
+    SOURCE_LOUVER_CENTERS = np.linspace(-1.5*SOURCE_LOUVER_SEPARATION,
+                                        1.5*SOURCE_LOUVER_SEPARATION,
+                                        SOURCE_LOUVER_N)
+    SOURCE_LOUVER_ANGLES = np.arctan2(SOURCE_LOUVER_CENTERS, -SOURCE_LOUVER_Z)
+
     areaDetector = Detector(description="The main area detector for Candor",
                             dimension=[2, 54], offset=0, strides=[54, 1])
     attenuator = Map(label="attenuator", types=("int32", "float32"), description="CANDOR available attenuators.")
     attenuatorMotor = Motor(label="attenuator motor", units="cm", description="CANDOR attenuator motor.")
-    # virtual beam
     counter = Counter()
     detectorMaskMap = Map(label="detector mask", types=("str", "float32"), description="")
     detectorMaskMotor = Motor(description="Vertically translates a mask over all detectors allowing for varying beam widths.", label="detector mask motor", units="mm")
-    # virtual detectorTable
     detectorTableMotor = Motor(description="Scattering Angle", label="detector table motor", units="degree")
     experiment = Experiment("CANDOR")
     convergingGuide = Motor(description="Horizontal converging guide", label="guide width", units="mm")
@@ -557,17 +579,159 @@ class Candor(Instrument):
         Return wavelengths for each detector as a 2D array.
         """
         num_bank = self.detectorTable.rowAngularOffsets.size
-        return np.reshape(self.detectorTable.wavelengths, (num_bank, -1))
+        return np.reshape(self.detectorTable.wavelengths, (-1, num_bank)).T
 
 # Add the virtual devices
 for k, v in devices.items():
     setattr(Candor, k, Virtual(**v))
 Candor.set_device_ids()
 
+def load_spectrum():
+    """
+    Return the incident spectrum
+    """
+    datadir = os.path.abspath(os.path.dirname(__file__))
+    L, I_in = np.loadtxt(os.path.join(datadir, 'CANDOR-incident.dat')).T
+    _, I_out = np.loadtxt(os.path.join(datadir, 'CANDOR-detected.dat')).T
+    L, I_in, I_out = L[::-1], I_in[::-1], I_out[::-1]
+    return L, I_in, L, I_out/I_in
+
+
+def comb(n, width, separation):
+    """
+    Return bin edges with *n* bins.
+
+    *separation* is the distance between bin centers and *width* is the
+    size of each bin.
+    """
+    # Form n centers from n-1 intervals between centers, with
+    # center-to-center spacing set to separation.  This puts the
+    # final center at (n-1)*separation away from the first center.
+    # Divide by two to arrange these about zero, giving (-limit, limit).
+    # Edges are +/- width/2 from the centers.
+    limit = separation*(n-1)/2
+    centers = np.linspace(-limit, limit, n)
+    edges = np.vstack([centers-width/2, centers+width/2]).T.flatten()
+    return edges
+
+def detector_mask(width=10.):
+    """
+    Return slit edges for candor detector mask.
+    """
+    #width = DETECTOR_MASK_WIDTHS[mask]
+    edges = comb(n=Candor.DETECTOR_MASK_N,
+                 width=width,
+                 separation=Candor.DETECTOR_MASK_SEPARATION)
+    # Every 3rd channel is dead (used for cooling)
+    edges = edges.reshape(-1, 3, 2)[:, :2, :].flatten()
+    # Aim at the center of the first bank
+    edges -= (edges[0]+edges[1])/2
+    return edges
+
+def wavelength_dispersion(L, mask=10., detector_distance=Candor.DETECTOR_Z):
+    """
+    Return estimated wavelength dispersion for the candor channels.
+
+    *L* (Ang) is the wavelength measured for each channel.
+
+    *mask* (mm) is the mask opening at the start of each detector channel.
+
+    *detector_distance* (mm) is the distance from the center of the sample
+    to the detector mask.
+
+    Note: result is 0.01 below the value shown in Fig 9 of ref.
+
+    Running some approx. numbers to decide if changing the mask will
+    significantly change the resolution::
+
+        dQ/Q @ 1 degree for detectors between 4 A and 6 A
+
+        4 mm:  [0.85 0.73 0.60 0.48 0.36 0.23]
+        10 mm: [0.96 0.85 0.73 0.61 0.50 0.39]
+
+    This value is dominated by the wavelength spread.
+
+    **References**
+
+    Jeremy Cook, "Estimates of maximum CANDOR detector count rates on NG-1"
+    Oct 27, 2015
+    """
+    #: (Ang) d-spacing for graphite (002)
+    dspacing = 3.354
+
+    #: (rad) FWHM mosaic spread for graphite
+    eta = radians(30./60.)  # convert arcseconds to radians
+
+    #: (rad) FWHM incident divergence
+    a0 = mask/detector_distance
+
+    #: (rad) FWHM outgoing divergence
+    a1 = a0 + 2*eta
+
+    #: (rad) bragg angle for wavelength selector
+    theta = arcsin(L/2/dspacing)
+    #pylab.plot(degrees(theta))
+
+    #: (unitless) FWHM dL/L, as given in Eqn 6 of the reference
+    dLoL = (sqrt((a0**2*a1**2 + (a0**2 + a1**2)*eta**2)/(a0**2+a1**2+4*eta**2))
+            / tan(theta))
+    return dLoL
+
+def candor_setup():
+    # Save the incident/detected spectrum as a Candor class attribute
+    Candor.spectrum = load_spectrum()
+
+    # Multibeam beam centers and angles
+    # Note: if width is 0, then both edges are at the center
+    beam_centers = comb(4, 0, Candor.SOURCE_LOUVER_SEPARATION)[::2]
+    beam_angles = arctan(beam_centers/-Candor.SOURCE_LOUVER_Z)
+
+    # Detector bank wavelengths and angles
+    # Note: assuming flat detector bank; a curved bank will give very slightly
+    # different answers.
+    wavelengths = Candor.spectrum[0]
+    bank_centers = detector_mask(width=0.)[::2]
+    bank_angles = arctan(bank_centers/Candor.DETECTOR_Z)
+    #print("bank centers", bank_centers)
+    #print("bank angles", degrees(bank_angles))
+    #print("beam angles", degrees(beam_angles))
+
+    num_leaf = len(wavelengths)
+    num_bank = len(bank_angles)
+    angular_spreads = 2.865*np.ones(num_bank*num_leaf)  # from nice vm
+    wavelength_spreads = wavelength_dispersion(wavelengths)
+    wavelength_spreads = 0.01*np.ones(num_bank*num_leaf)  # from nice vm
+    #L = 6. - 0.037*np.arange(54)  # from nice vm
+    wavelength_array = np.tile(wavelengths, (num_bank, 1)).T.flatten()
+
+    # Initialize candor with fixed info fields
+    candor = Candor()
+    candor.move(
+        beam_angularOffsets=degrees(beam_angles),
+        detectorTable_angularSpreads=angular_spreads,
+        detectorTable_rowAngularOffsets=degrees(bank_angles),
+        detectorTable_wavelengthSpreads=wavelength_spreads,
+        detectorTable_wavelengths=wavelength_array,
+    )
+
+    # Initialize default values
+    candor.move(
+        Q_angleIndex=0,
+        Q_wavelengthIndex=0,
+        Q_beamIndex=0,
+        multiSlit1TransMap="OUT",
+        singleSlitApertureMap="IN",
+        monoTransMap="OUT",
+        mono_wavelength=4.75,
+        mono_wavelengthSpread=0.01,
+    )
+
+    return candor
+
 if __name__ == "__main__":
     import time
     T0 = time.mktime(time.strptime("2018-01-01 12:00:00", "%Y-%m-%d %H:%M:%S"))
-    candor = Candor()
+    candor = candor_setup()
     print(candor.config_record(T0))
     print(candor.open_record(T0))
     print(candor.state_record(T0))

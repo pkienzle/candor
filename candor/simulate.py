@@ -14,74 +14,8 @@ from numpy import (sin, cos, tan, arcsin, arccos, arctan, arctan2, radians, degr
 from numpy import pi, inf
 import pylab
 
-from .instrument import Candor
+from .instrument import Candor, candor_setup, comb, detector_mask
 #from .nice import Instrument, Motor
-
-# dimensions in millimeters
-MONOCHROMATOR_Z = -5216.5
-SOURCE_APERTURE_Z = -4600. # TODO: missing this number
-SOURCE_APERTURE = 60.
-SOURCE_LOUVER_Z = -4403.026
-SOURCE_LOUVER_N = 4
-SOURCE_LOUVER_SEPARATION = 15.5  # center-center distance for source multi-slits
-SOURCE_LOUVER_MAX = 14.5  # maximum opening for source multi-slit
-SOURCE_SLIT_Z = -4335.86
-PRE_SAMPLE_SLIT_Z = -356.0
-POST_SAMPLE_SLIT_Z = 356.0
-DETECTOR_MASK_HEIGHT = 30.
-DETECTOR_MASK_WIDTHS = [10., 8., 6., 4.]
-DETECTOR_MASK_N = 30
-DETECTOR_MASK_SEPARATION = 12.84
-DETECTOR_Z = 3496.
-DETECTOR_WIDTH = (DETECTOR_MASK_N+1)*DETECTOR_MASK_SEPARATION
-
-WAVELENGTH_MIN = 4.
-WAVELENGTH_MAX = 6.
-WAVELENGTH_N = 54
-
-SOURCE_LOUVER_CENTERS = np.linspace(-1.5*SOURCE_LOUVER_SEPARATION,
-                                    1.5*SOURCE_LOUVER_SEPARATION,
-                                    SOURCE_LOUVER_N)
-SOURCE_LOUVER_ANGLES = np.arctan2(SOURCE_LOUVER_CENTERS, -SOURCE_LOUVER_Z)
-
-
-def detector_mask(width=10.):
-    """
-    Return slit edges for candor detector mask.
-    """
-    #width = DETECTOR_MASK_WIDTHS[mask]
-    edges = comb(n=DETECTOR_MASK_N,
-                 width=width,
-                 separation=DETECTOR_MASK_SEPARATION)
-    # Every 3rd channel is dead (used for cooling)
-    edges = edges.reshape(-1, 3, 2)[:, :2, :].flatten()
-    return edges
-
-def choose_sample_slit(louver, sample_width, sample_angle):
-    theta = radians(sample_angle)
-    index = np.nonzero(louver)[0]
-    k = index[-1]
-    x0, y0 = SOURCE_LOUVER_Z, SOURCE_LOUVER_CENTERS[k] + louver[k]/2
-    x1, y1 = sample_width/2*cos(theta), sample_width/2*sin(theta)
-    top = (y1-y0)/(x1-x0)*(PRE_SAMPLE_SLIT_Z - x1) + y1
-    k = index[0]
-    x0, y0 = SOURCE_LOUVER_Z, SOURCE_LOUVER_CENTERS[k] - louver[k]/2
-    x1, y1 = -sample_width/2*cos(theta), -sample_width/2*sin(theta)
-    bottom = (y1-y0)/(x1-x0)*(PRE_SAMPLE_SLIT_Z - x1) + y1
-    #print(top, bottom)
-    #slit = 2*max(top, -bottom)
-    slit = 2*max(abs(top), abs(bottom))
-    return slit
-
-def load_spectrum():
-    """
-    Return the incident spectrum
-    :return:
-    """
-    datadir = os.path.abspath(os.path.dirname(__file__))
-    L, I_in = np.loadtxt(os.path.join(datadir, 'CANDOR-incident.dat')).T
-    _, I_out = np.loadtxt(os.path.join(datadir, 'CANDOR-detected.dat')).T
-    return L, I_in, L, I_out/I_in
 
 def pairwise(iterable):
     "s -> (s0, s1), (s2, s3), (s4, s5), ..."
@@ -96,24 +30,6 @@ def rotate(xy, theta):
     R = np.array([[cos_theta, -sin_theta],[sin_theta, cos_theta]])
     return np.dot(R, xy)
 
-def comb(n, width, separation):
-    """
-    Return bin edges with *n* bins.
-
-    *separation* is the distance between bin centers and *width* is the
-    size of each bin.
-    """
-    # Form n centers from n-1 intervals between centers, with
-    # center-to-center spacing set to separation.  This puts the
-    # final center at (n-1)*separation away from the first center.
-    # Divide by two to arrange these about zero, giving (-limit, limit).
-    # Edges are +/- width/2 from the centers.
-    limit = separation*(n-1)/2
-    centers = np.linspace(-limit, limit, n)
-    edges = np.vstack([centers-width/2, centers+width/2]).T.flatten()
-    return edges
-
-# TODO: avoid candor specific properties in simulation engine
 class Neutrons(object):
     #: angle of the x-axis relative to source-sample line (rad)
     beam_angle = 0.
@@ -194,7 +110,7 @@ class Neutrons(object):
         self.add_element((z, -width), (z, -width/2))
         self.add_element((z, width/2), (z, width))
 
-    def comb_source(self, z, widths, separation):
+    def comb_source(self, z, widths, separation, focus=0.):
         n = self.xy.shape[1]
         num_slits = len(widths)
         limit = separation*(num_slits-1)/2
@@ -211,8 +127,7 @@ class Neutrons(object):
         self.x = x + shift[index]
         # Aim the center of the divergence at the pre-sample slit position
         # rather than the sample position
-        self.angle += arctan(self.x/(self.z - PRE_SAMPLE_SLIT_Z))
-        #self.angle += arctan(self.x/self.z)
+        self.angle += arctan(self.x/(self.z - focus))
         #self.angle -= SOURCE_LOUVER_ANGLES[index]
         self.add_trace()
         self.add_element((z, edges[0]-widths[0]/2), (z, edges[0]))
@@ -241,51 +156,6 @@ class Neutrons(object):
     def clear_trace(self):
         self.history = []
 
-    def plot_trace_old(self, split=False):
-        from matplotlib.lines import Line2D
-        colors = 'rgby'
-        for k, (zx, active) in enumerate(self.history[:-1]):
-            zx_next, active_next = self.history[k+1]
-            if active.shape != active_next.shape: continue
-            z = np.vstack((zx[0], zx_next[0]))
-            x = np.vstack((zx[1], zx_next[1]))
-            # TODO: source will be the wrong length after trim
-            for k, c in enumerate(colors):
-                index = active & (self.source == k)
-                if index.any():
-                    if split:
-                        pylab.subplot(2,2,k+1)
-                    pylab.plot(z[:,index], x[:,index], '-', color=c, linewidth=0.1)
-
-        entries = []
-        for k, c in enumerate(colors):
-            angle = degrees(SOURCE_LOUVER_ANGLES[k]) + self.sample_angle
-            label = '%.3f degrees'%angle
-            if split:
-                pylab.subplot(2,2,k+1)
-                pylab.title(label)
-            else:
-                line = Line2D([],[],color=c,marker=None,
-                              label=label, linestyle='-')
-                entries.append(line)
-        if not split:
-            pylab.legend(handles=entries, loc='best')
-        #pylab.axis('equal')
-
-        # draw elements, cutting slits off at the bounds of the data
-        if split:
-            for k, c in enumerate(colors):
-                #pylab.axis('equal')
-                #pylab.grid(True)
-                pylab.subplot(2,2,k+1)
-                for (z1, x1), (z2, x2) in self.elements:
-                    pylab.plot([z1, z2], [x1, x2], 'k')
-        else:
-            #pylab.axis('equal')
-            #pylab.grid(True)
-            for (z1, x1), (z2, x2) in self.elements:
-                pylab.plot([z1, z2], [x1, x2], 'k')
-
     def angle_hist(self):
         from scipy.stats import gaussian_kde
         pylab.figure(2)
@@ -302,40 +172,6 @@ class Neutrons(object):
         pylab.xlabel('angle (degrees)')
         pylab.ylabel('P(angle)')
         pylab.figure(1)
-
-    def plot_trace(self, split=None):
-        from matplotlib.collections import LineCollection
-        import matplotlib.colors as mcolors
-        import matplotlib.cm as mcolormap
-
-        active_angle = self.angle[self.active] if self.active.any() else self.angle
-        active_angle = degrees(active_angle) + self.sample_angle
-        vmin, vmax = active_angle.min(), active_angle.max()
-        vpad = 0.05*(vmax-vmin)
-        cnorm = mcolors.Normalize(vmin=vmin-vpad, vmax=vmax+vpad)
-        cmap = mcolormap.ScalarMappable(norm=cnorm, cmap=pylab.get_cmap('jet'))
-        colors = cmap.to_rgba(degrees(self.angle) + self.sample_angle)
-        #colors = cmap.to_rgba(active_angle)
-        for k, (zx, active) in enumerate(self.history[:-1]):
-            zx_next, active_next = self.history[k+1]
-            if active.shape != active_next.shape:
-                continue
-            if active.any():
-                segs = np.hstack((zx[:, active].T, zx_next[:, active].T))
-                segs = segs.reshape(-1, 2, 2)
-                lines = LineCollection(segs, linewidth=0.1,
-                                       linestyle='solid', colors=colors[active])
-                pylab.gca().add_collection(lines)
-                #pylab.plot(z[:,index], x[:,index], '-', color=c, linewidth=0.1)
-
-        # draw elements, cutting slits off at the bounds of the data
-        #pylab.axis('equal')
-        #pylab.grid(True)
-        for (z1, x1), (z2, x2) in self.elements:
-            pylab.plot([z1, z2], [x1, x2], 'k')
-        cmap.set_array(active_angle)
-        h = pylab.colorbar(cmap)
-        h.set_label('angle (degrees)')
 
     def plot_points(self):
         x, y = rotate(self.xy, -self.beam_angle)
@@ -451,12 +287,13 @@ class Neutrons(object):
         z2, x2 = rotate((width/2+offset, 0), theta)
         self.add_element((z1, x1), (z2, x2))
 
-    def slit(self, z, width, offset=0.):
+    def slit(self, z, width, offset=0., center_angle=0.):
         """
-        Send
+        Send beam through a pair of slits.
         :param width:
         :return:
         """
+        offset += z * tan(radians(center_angle))
         self.move(z, add_trace=False)
         self.active &= (self.x >= -width/2+offset)
         self.active &= (self.x <= +width/2+offset)
@@ -476,7 +313,9 @@ class Neutrons(object):
         self.move(z, add_trace=False)
         self.slit_array(z, comb(n, width, separation))
 
-    def slit_array(self, z, edges):
+    def slit_array(self, z, edges, center_angle=0.):
+        self.move(z, add_trace=False)
+        edges -= z * tan(radians(center_angle))
         # Searching the neutron x positions in the list of comb edges
         # gives odd indices if they go through the edges, and even indices
         # if they encounter the edges of the comb.
@@ -502,104 +341,101 @@ class Neutrons(object):
         self.weight *= rk
         return self
 
-def wavelength_dispersion(L, mask=10., detector_distance=DETECTOR_Z):
-    """
-    Return estimated wavelength dispersion for the candor channels.
+    def plot_trace(self, split=None):
+        from matplotlib.collections import LineCollection
+        import matplotlib.colors as mcolors
+        import matplotlib.cm as mcolormap
 
-    *L* (Ang) is the wavelength measured for each channel.
+        active_angle = self.angle[self.active] if self.active.any() else self.angle
+        active_angle = degrees(active_angle) + self.sample_angle
+        vmin, vmax = active_angle.min(), active_angle.max()
+        vpad = 0.05*(vmax-vmin)
+        cnorm = mcolors.Normalize(vmin=vmin-vpad, vmax=vmax+vpad)
+        cmap = mcolormap.ScalarMappable(norm=cnorm, cmap=pylab.get_cmap('jet'))
+        colors = cmap.to_rgba(degrees(self.angle) + self.sample_angle)
+        #colors = cmap.to_rgba(active_angle)
+        for k, (zx, active) in enumerate(self.history[:-1]):
+            zx_next, active_next = self.history[k+1]
+            if active.shape != active_next.shape:
+                continue
+            if active.any():
+                segs = np.hstack((zx[:, active].T, zx_next[:, active].T))
+                segs = segs.reshape(-1, 2, 2)
+                lines = LineCollection(segs, linewidth=0.1,
+                                       linestyle='solid', colors=colors[active])
+                pylab.gca().add_collection(lines)
+                #pylab.plot(z[:,index], x[:,index], '-', color=c, linewidth=0.1)
 
-    *mask* (mm) is the mask opening at the start of each detector channel.
+        # draw elements, cutting slits off at the bounds of the data
+        #pylab.axis('equal')
+        #pylab.grid(True)
+        for (z1, x1), (z2, x2) in self.elements:
+            pylab.plot([z1, z2], [x1, x2], 'k')
+        cmap.set_array(active_angle)
+        h = pylab.colorbar(cmap)
+        h.set_label('angle (degrees)')
 
-    *detector_distance* (mm) is the distance from the center of the sample
-    to the detector mask.
+    def _plot_trace_old(self, split=False):
+        from matplotlib.lines import Line2D
+        colors = 'rgby'
+        for k, (zx, active) in enumerate(self.history[:-1]):
+            zx_next, active_next = self.history[k+1]
+            if active.shape != active_next.shape: continue
+            z = np.vstack((zx[0], zx_next[0]))
+            x = np.vstack((zx[1], zx_next[1]))
+            # TODO: source will be the wrong length after trim
+            for k, c in enumerate(colors):
+                index = active & (self.source == k)
+                if index.any():
+                    if split:
+                        pylab.subplot(2,2,k+1)
+                    pylab.plot(z[:,index], x[:,index], '-', color=c, linewidth=0.1)
 
-    Note: result is 0.01 below the value shown in Fig 9 of ref.
+        entries = []
+        for k, c in enumerate(colors):
+            angle = degrees(Candor.SOURCE_LOUVER_ANGLES[k]) + self.sample_angle
+            label = '%.3f degrees'%angle
+            if split:
+                pylab.subplot(2,2,k+1)
+                pylab.title(label)
+            else:
+                line = Line2D([],[],color=c,marker=None,
+                              label=label, linestyle='-')
+                entries.append(line)
+        if not split:
+            pylab.legend(handles=entries, loc='best')
+        #pylab.axis('equal')
 
-    Running some approx. numbers to decide if changing the mask will
-    significantly change the resolution::
+        # draw elements, cutting slits off at the bounds of the data
+        if split:
+            for k, c in enumerate(colors):
+                #pylab.axis('equal')
+                #pylab.grid(True)
+                pylab.subplot(2,2,k+1)
+                for (z1, x1), (z2, x2) in self.elements:
+                    pylab.plot([z1, z2], [x1, x2], 'k')
+        else:
+            #pylab.axis('equal')
+            #pylab.grid(True)
+            for (z1, x1), (z2, x2) in self.elements:
+                pylab.plot([z1, z2], [x1, x2], 'k')
 
-        dQ/Q @ 1 degree for detectors between 4 A and 6 A
+def choose_sample_slit(louver, sample_width, sample_angle):
+    theta = radians(sample_angle)
+    index = np.nonzero(louver)[0]
+    k = index[-1]
+    x0, y0 = Candor.SOURCE_LOUVER_Z, Candor.SOURCE_LOUVER_CENTERS[k] + louver[k]/2
+    x1, y1 = sample_width/2*cos(theta), sample_width/2*sin(theta)
+    top = (y1-y0)/(x1-x0)*(Candor.PRE_SAMPLE_SLIT_Z - x1) + y1
+    k = index[0]
+    x0, y0 = Candor.SOURCE_LOUVER_Z, Candor.SOURCE_LOUVER_CENTERS[k] - louver[k]/2
+    x1, y1 = -sample_width/2*cos(theta), -sample_width/2*sin(theta)
+    bottom = (y1-y0)/(x1-x0)*(Candor.PRE_SAMPLE_SLIT_Z - x1) + y1
+    #print(top, bottom)
+    #slit = 2*max(top, -bottom)
+    slit = 2*max(abs(top), abs(bottom))
+    return slit
 
-        4 mm:  [0.85 0.73 0.60 0.48 0.36 0.23]
-        10 mm: [0.96 0.85 0.73 0.61 0.50 0.39]
-
-    This value is dominated by the wavelength spread.
-
-    **References**
-
-    Jeremy Cook, "Estimates of maximum CANDOR detector count rates on NG-1"
-    Oct 27, 2015
-    """
-    #: (Ang) d-spacing for graphite (002)
-    dspacing = 3.354
-
-    #: (rad) FWHM mosaic spread for graphite
-    eta = radians(30./60.)  # convert arcseconds to radians
-
-    #: (rad) FWHM incident divergence
-    a0 = mask/detector_distance
-
-    #: (rad) FWHM outgoing divergence
-    a1 = a0 + 2*eta
-
-    #: (rad) bragg angle for wavelength selector
-    theta = arcsin(L/2/dspacing)
-    #pylab.plot(degrees(theta))
-
-    #: (unitless) FWHM dL/L, as given in Eqn 6 of the reference
-    dLoL = (sqrt((a0**2*a1**2 + (a0**2 + a1**2)*eta**2)/(a0**2+a1**2+4*eta**2))
-            / tan(theta))
-    return dLoL
-
-
-def candor_setup():
-    Neutrons.set_spectrum(load_spectrum())
-
-    # Multibeam beam centers and angles
-    # Note: if width is 0, then both edges are at the center
-    beam_centers = comb(4, 0, SOURCE_LOUVER_SEPARATION)[::2]
-    beam_angles = arctan(beam_centers/-SOURCE_LOUVER_Z)
-
-    # Detector bank wavelengths and angles
-    wavelengths = Neutrons.spectrum[0]
-    bank_centers = detector_mask(width=0.)[::2]
-    # Note: assuming flat detector bank; a curved bank will give
-    bank_angles = arctan(bank_centers/DETECTOR_Z)
-    bank_angles += bank_angles[0]
-    #print("bank centers", bank_centers)
-    #print("bank angles", degrees(bank_angles))
-    #print("beam angles", degrees(beam_angles))
-
-    num_leaf = len(wavelengths)
-    num_bank = len(bank_angles)
-    angular_spreads = 2.865*np.ones((1, num_bank*num_leaf))  # from nice vm
-    wavelength_spreads = wavelength_dispersion(wavelengths)
-    wavelength_spreads = 0.01*np.ones((1, num_bank*num_leaf))  # from nice vm
-    #L = 6. - 0.037*np.arange(54)  # from nice vm
-    wavelength_array = np.tile(wavelengths, (num_bank, 1)).T.flatten()
-
-    # Initialize candor with fixed info fields
-    candor = Candor()
-    candor.move(
-        beam_angularOffsets=[degrees(beam_angles)],
-        detectorTable_angularSpreads=[angular_spreads],
-        detectorTable_rowAngularOffsets=[degrees(bank_angles)],
-        detectorTable_wavelengthSpreads=[wavelength_spreads],
-        detectorTable_wavelengths=[wavelength_array],
-    )
-
-    # Initialize default values
-    candor.move(
-        Q_angleIndex=0,
-        Q_wavelengthIndex=0,
-        Q_beamIndex=0,
-        multiSlit1TransMap="OUT",
-        singleSlitApertureMap="IN",
-        monoTransMap="OUT",
-        mono_wavelength=4.75,
-        mono_wavelengthSpread=0.01,
-    )
-    return candor
 
 def source_divergence(source_slit_z, source_slit_w,
                       sample_slit_z, sample_slit_w,
@@ -718,6 +554,8 @@ def qxz_to_angle(qx, qz, sample_lambda=5., detector_lambda=5.):
     # Plus root discriminant solution
     theta_ip = 2*arctan2(2*Z + sqrt(discriminant), scale)
     theta_fp = arcsin(kz*lambda_f + lambda_f/lambda_i*sin(theta_ip))
+    # Note that theta_i is (usually) negative, so sample angle is -theta_i
+    # and detector angle is theta_f - theta_i.
     sample_theta_p = clip_angle(degrees(-theta_ip))
     detector_theta_p = clip_angle(degrees(theta_fp - theta_ip))
     same_sign_p = same_sign(sample_theta_p, detector_theta_p)
@@ -727,6 +565,8 @@ def qxz_to_angle(qx, qz, sample_lambda=5., detector_lambda=5.):
     # Minus root discriminant solution
     theta_im = 2*arctan2(2*Z - sqrt(discriminant), scale)
     theta_fm = arcsin(kz*lambda_f + lambda_f/lambda_i*sin(theta_im))
+    # Note that theta_i is (usually) negative, so sample angle is -theta_i
+    # and detector angle is theta_f - theta_i.
     sample_theta_m = clip_angle(degrees(-theta_im))
     detector_theta_m = clip_angle(degrees(theta_fm - theta_im))
     same_sign_m = same_sign(sample_theta_m, detector_theta_m)
@@ -812,7 +652,7 @@ def _check_qxz_to_angle(tol=1e-8):
 
 def simulate(counts, trace=False,
         sample_width=10., sample_offset=0., sample_diffuse=0.,
-        sample_slit_offset=0.,
+        sample_slit_offset=0., detector_slit_offset=0.,
         refl=lambda kz: 1.,
         ):
     candor = Candor()
@@ -835,7 +675,7 @@ def simulate(counts, trace=False,
     target_leaf = candor.Q.wavelengthIndex
     source_beam = candor.Q.beamIndex
     sample_angle = candor.sampleAngleMotor.softPosition
-    detector_angle = candor.detectorTableMotor.softPosition
+    detector_table_angle = candor.detectorTableMotor.softPosition
 
     has_converging_guide = candor.convergingGuideMap.key == "IN"
     has_multibeam = candor.multiSlit1TransMap.key == "IN"
@@ -844,8 +684,8 @@ def simulate(counts, trace=False,
     mono_wavelength = candor.mono.wavelength
     mono_wavelength_spread = candor.mono.wavelengthSpread
 
-    beam_offset = candor.beam.angularOffsets[0, source_beam]
-    bank_angle = candor.detectorTable.rowAngularOffsets[0, target_bank]
+    beam_offset = candor.beam.angularOffsets[source_beam] if has_multibeam else 0.
+    bank_angle = candor.detectorTable.rowAngularOffsets[target_bank]
     target_wavelength = candor.wavelengths[target_bank, target_leaf]
 
     # Set derived motors as needed.
@@ -858,16 +698,21 @@ def simulate(counts, trace=False,
     lambda_f = target_wavelength
     if candor.Q.x is None or candor.Q.z is None:
         theta_i = sample_angle + beam_offset
-        theta_f = detector_angle + bank_angle
+        theta_f = detector_table_angle + bank_angle
         qx, qz = angle_to_qxz(theta_i, theta_f, lambda_i, lambda_f)
         candor.Q.x, candor.Q.z = qx, qz
-    if sample_angle is None or detector_angle is None:
+        #print("angles to qx, qz")
+    if sample_angle is None or detector_table_angle is None:
         L = target_wavelength
         qx, qz = candor.Q.x, candor.Q.z
         theta_i, theta_f = qxz_to_angle(qx, qz, lambda_i, lambda_f)
         sample_angle = theta_i - beam_offset
-        detector_angle = theta_f - bank_angle
-        candor.move(sampleAngleMotor=sample_angle, detectorTableMotor=detector_angle)
+        detector_table_angle = theta_f - bank_angle
+        candor.move(
+            sampleAngleMotor=sample_angle,
+            detectorTableMotor=detector_table_angle)
+        #print("qx, qz to angles", lambda_i, lambda_f, theta_i, theta_f)
+    detector_angle = detector_table_angle + bank_angle
 
     # Proceed with simulation
     has_sample = (sample_width > 0.)
@@ -875,14 +720,14 @@ def simulate(counts, trace=False,
 
     # Enough divergence to cover the presample slit from the source aperture
     # Make sure we get the direct beam as well.
-    divergence = degrees(arctan(sample_slit/abs(SOURCE_SLIT_Z-PRE_SAMPLE_SLIT_Z)))
+    divergence = degrees(arctan(sample_slit/abs(Candor.SOURCE_SLIT_Z-Candor.PRE_SAMPLE_SLIT_Z)))
     #print("divergence", divergence)
     #divergence = 5
 
     d2 = source_divergence(
-        SOURCE_SLIT_Z, source_slit,
-        PRE_SAMPLE_SLIT_Z, sample_slit,
-        POST_SAMPLE_SLIT_Z, detector_slit,
+        Candor.SOURCE_SLIT_Z, source_slit,
+        Candor.PRE_SAMPLE_SLIT_Z, sample_slit,
+        Candor.POST_SAMPLE_SLIT_Z, detector_slit,
         sample_width, sample_offset,
         sample_angle, detector_angle,
         )
@@ -903,7 +748,10 @@ def simulate(counts, trace=False,
     n = Neutrons(n=counts, trace=trace, spectrum=spectrum, divergence=divergence)
     if has_multibeam:
         # Use source louvers
-        n.comb_source(SOURCE_LOUVER_Z, louver, SOURCE_LOUVER_SEPARATION)
+        n.comb_source(Candor.SOURCE_LOUVER_Z, louver,
+                      Candor.SOURCE_LOUVER_SEPARATION,
+                      focus=Candor.PRE_SAMPLE_SLIT_Z,
+                      )
     elif has_converging_guide:
         # Convergent guides remove any effects of slit collimation, and so are
         # equivalent to sliding the source toward the sample
@@ -912,30 +760,30 @@ def simulate(counts, trace=False,
         sample_xs = sample_width*sin(radians(sample_angle))
         sample_low = sample_xs*(-0.5 - spill + sample_offset/sample_width)
         sample_high = sample_xs*(0.5 + spill + sample_offset/sample_width)
-        n.converging_source(PRE_SAMPLE_SLIT_Z, sample_slit, sample_low, sample_high)
+        n.converging_source(Candor.PRE_SAMPLE_SLIT_Z, sample_slit, sample_low, sample_high)
     else:
         # Use fixed width source with given divergence
         # Aim the center of the divergence at the target position
-        target = PRE_SAMPLE_SLIT_Z
+        target = Candor.PRE_SAMPLE_SLIT_Z
         #target = POST_SAMPLE_SLIT_Z
         #target = DETECTOR_Z
         #target = inf  # target at infinity
         #target = -10  # just before sample
         #target = 0  # at the sample
         #target = 10  # just after sample
-        n.slit_source(SOURCE_SLIT_Z, source_slit, target=target)
+        n.slit_source(Candor.SOURCE_SLIT_Z, source_slit, target=target)
 
+    # Play with a pre-sample comb selector (doesn't exist on candor)
     if False and has_multibeam:
-        # Play with a pre-sample comb selector (doesn't exist)
         comb_z = -1000
-        comb_separation = SOURCE_LOUVER_SEPARATION*comb_z/SOURCE_LOUVER_Z
+        comb_separation = Candor.SOURCE_LOUVER_SEPARATION*comb_z/Candor.SOURCE_LOUVER_Z
         comb_max = comb_separation - 1.
         comb_min = 0.1
         comb_width = np.maximum(np.minimum(louver, comb_max), comb_min)
-        n.comb_filter(z=comb_z, n=SOURCE_LOUVER_N, width=comb_width,
+        n.comb_filter(z=comb_z, n=Candor.SOURCE_LOUVER_N, width=comb_width,
                       separation=comb_separation)
 
-    n.slit(z=PRE_SAMPLE_SLIT_Z, width=sample_slit, offset=sample_slit_offset)
+    n.slit(z=Candor.PRE_SAMPLE_SLIT_Z, width=sample_slit, offset=sample_slit_offset)
     #return n
     if has_sample:
         n.sample(angle=sample_angle, width=sample_width, offset=sample_offset,
@@ -943,16 +791,28 @@ def simulate(counts, trace=False,
     else:
         n.move(z=0.)
     #return n
+
+    # Rotate beam through detector arm
     n.detector_angle(angle=detector_angle)
+
+    # Send beam through post-sample slit.
+    # Assume the slit is centered on target detector bank. The other option
+    # is that it is aimed at the center of the detector, which does not
+    # correspond to any particular bank.  Might want to do this for
+    # the converging beam mode.
     #n.clear_trace()
-    n.slit(z=POST_SAMPLE_SLIT_Z, width=detector_slit, offset=sample_slit_offset)
+    n.slit(z=Candor.POST_SAMPLE_SLIT_Z, width=detector_slit,
+           offset=detector_slit_offset)
+
+    # Play with a post-sample comb selector (doesn't exist on candor)
     if False:
-        # Play with a post-sample comb selector (doesn't exist)
-        n.comb_filter(z=-comb_z, n=SOURCE_LOUVER_N, width=comb_width,
+        n.comb_filter(z=-comb_z, n=Candor.SOURCE_LOUVER_N, width=comb_width,
                       separation=comb_separation)
-    n.move(z=DETECTOR_Z)
-    n.slit_array(z=DETECTOR_Z, edges=detector_mask(detector_mask_width))
-    n.move(z=DETECTOR_Z+1000)
+
+    # Send the neutrons through the detector mask
+    n.slit_array(z=Candor.DETECTOR_Z, edges=detector_mask(detector_mask_width),
+                 center_angle=bank_angle)
+    n.move(z=Candor.DETECTOR_Z+1000)
     #n.angle_hist()
 
     return n
@@ -967,8 +827,8 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
     #sample_diffuse = 0.01
     sample_diffuse = 0.0
 
-    target_bank = 12  # detector bank to use for angle in Q calculations
-    target_leaf = 2  # detector leaf to use for wavelength in Q calculations
+    target_bank = 2  # detector bank to use for angle in Q calculations
+    target_leaf = 20  # detector leaf to use for wavelength in Q calculations
     target_beam = 1  # beam number (in multibeam mode) to use for Q calculations
 
     layers = [
@@ -1003,7 +863,7 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
     #source_slit = 150.  # super-wide beam
 
     # TODO: should use slitAperture1a, 1b, 1c, 1d instead
-    louver = (radians(sample_angle) + SOURCE_LOUVER_ANGLES)*sample_width
+    louver = (radians(sample_angle) + Candor.SOURCE_LOUVER_ANGLES)*sample_width
     louver = abs(louver)
 
     detector_slit = sample_slit
@@ -1024,7 +884,7 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
     wavelength_spread = wavelength*0.01
 
     candor = Candor()
-    #sample_angle, detector_angle = None, None
+    sample_angle, detector_angle = None, None
     candor.move(
         # info fields
         Q_beamMode="SINGLE_BEAM" if wavelength_mode == "mono" else "WHITE_BEAM",
@@ -1085,12 +945,14 @@ def scan_demo(count=100):
 
 def main():
     candor_setup()
+    Neutrons.set_spectrum(Candor.spectrum)
     if len(sys.argv) < 2:
         print("incident angle in degrees required")
         sys.exit(1)
     theta = float(sys.argv[1])
     single_point_demo(theta=theta, count=1500)
     #scan_demo(150)
+    #pylab.axis('equal')
     pylab.show()
     sys.exit()
 
