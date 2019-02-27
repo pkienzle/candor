@@ -1098,6 +1098,19 @@ class Instrument(object):
         self.last_data = data
         return result
 
+    def _lookup(self, key):
+        device_id, node_id = key.split('_', 1) if '_' in key else (key, None)
+        device = getattr(self, device_id, None)  # type: Device
+        if device is None:
+            raise AttributeError("Device %s does not exist" % device_id)
+        if node_id is None:
+            node_id = getattr(device, '_primary')
+        if node_id is None:
+            raise AttributeError("Device %s has no primary node" % device_id)
+        if node_id not in getattr(device, '_nodes'):
+            raise AttributeError("Node %s.%s does not exist"%(device_id, node_id))
+        return device, node_id
+
     def move(self, **args):
         # type: (Any...) -> None
         """
@@ -1105,21 +1118,16 @@ class Instrument(object):
         only dvice is set.
         """
         for k, v in args.items():
-            device_id, node_id = k.split('_', 1) if '_' in k else (k, None)
-            device = getattr(self, device_id, None)  # type: Device
-            if device is None:
-                raise AttributeError("Device %s does not exist" % device_id)
-            if node_id is None:
-                node_id = getattr(device, '_primary')
-            if node_id is None:
-                raise AttributeError("Device %s has no primary node" % device_id)
-            if node_id not in getattr(device, '_nodes'):
-                raise AttributeError("Node %s.%s does not exist"%(device_id, node_id))
+            device, node_id = self._lookup(k)
             # Special handling for moving motors
-            # TODO: add noise to softPosition if not already within tolerance
             if node_id == 'softPosition':
+                # TODO: add noise to softPosition if not already within tolerance
                 setattr(device, 'desiredSoftPosition', v)
             setattr(device, node_id, v)
+
+    def __getitem__(self, key):
+        device, node_id = self._lookup(key)
+        return getattr(device, node_id)
 
     def config_record(self, timestamp):
         # type: (int) -> Dict[str, Any]

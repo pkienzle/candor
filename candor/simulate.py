@@ -366,6 +366,8 @@ class Neutrons(object):
         cmap.set_array(active_angle)
         h = pylab.colorbar(cmap)
         h.set_label('angle (degrees)')
+        pylab.xlabel('z (mm)')
+        pylab.ylabel('x (mm)')
 
     def _plot_trace_old(self, split=False):
         from matplotlib.lines import Line2D
@@ -809,20 +811,7 @@ def simulate(counts, trace=False,
 
     return n
 
-def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
-    #count = 10
-    sample_width, sample_offset = 100., 0.
-    #sample_width, sample_offset, source_slit = 2., 0., 0.02
-    min_sample_angle = theta
-    #mask = "4"  # 4 mm detector; posiion 3
-    mask = "10"  # 10 mm detector; position 0
-    #sample_diffuse = 0.01
-    sample_diffuse = 0.0
-
-    target_bank = 2  # detector bank to use for angle in Q calculations
-    target_leaf = 20  # detector leaf to use for wavelength in Q calculations
-    target_beam = 1  # beam number (in multibeam mode) to use for Q calculations
-
+def fake_sample():
     layers = [
         # depth rho rhoM thetaM phiM
         [ 0, 0.0, 0.0, 270, 0],
@@ -836,6 +825,21 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
     #refl = lambda kz: abs(abeles.refl(kz, depth, rho))**2
     refl = lambda kz: 0.9*np.ones(kz.shape)
     #pylab.semilogy(refl(np.linspace(0, 0.2, 1000))); pylab.show(); sys.exit()
+    return refl
+
+def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
+    #count = 10
+    sample_width, sample_offset = 100., 0.
+    #sample_width, sample_offset, source_slit = 2., 0., 0.02
+    min_sample_angle = theta
+    #mask = "4"  # 4 mm detector; posiion 3
+    mask = "10"  # 10 mm detector; position 0
+    #sample_diffuse = 0.01
+    sample_diffuse = 0.0
+
+    target_bank = 2  # detector bank to use for angle in Q calculations
+    target_leaf = 20  # detector leaf to use for wavelength in Q calculations
+    target_beam = 1  # beam number (in multibeam mode) to use for Q calculations
 
     #sample_angle = min_sample_angle - degrees(SOURCE_LOUVER_ANGLES[0])
     sample_angle = min_sample_angle
@@ -875,6 +879,12 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
     wavelength = 4.75
     wavelength_spread = wavelength*0.01
 
+    #source_slit *= 10
+    #sample_slit *= 3
+    #detector_slit *= 0.02
+    source_slit *= 0.8
+    sample_slit *= 0.8
+    #detector_slit *= 0.02
     candor = Candor()
     sample_angle, detector_angle = None, None
     candor.move(
@@ -913,17 +923,130 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
         sample_offset=sample_offset,
         sample_diffuse=sample_diffuse,
         sample_slit_offset=sample_slit_offset,
-        refl=refl,  # Should replace this with sample scatter
+        refl=fake_sample(),  # Should replace this with sample scatter
         trace=trace,
     )
 
     if plot:
         n.plot_trace(split=split)
-        pylab.xlabel('z (mm)')
-        pylab.ylabel('x (mm)')
         pylab.title('sample width=%g'%sample_width)
         #pylab.axis('equal')
 
+class SliderSet:
+    def __init__(self, n, update, query=None):
+        self._handles = {}
+        self._connectors = {}
+        self.k = 0
+        self.n = n
+        self.update = update
+        self.query = query
+
+    def add(self, axis, limits=None, value=None, label=None):
+        # Delayed import, in case we are not running with matplotlib available
+        from matplotlib.widgets import Slider
+        from matplotlib import pyplot
+        if self.k >= self.n:
+            raise RuntimeError("too many sliders")
+        if label is None:
+            label = axis
+        if value is None:
+            value = limits[0]
+        self.k += 1
+        ax = pyplot.subplot(self.n, 2, 2*self.k)
+        slider = Slider(ax, label, limits[0], limits[1], valinit=value)
+        slider.on_changed(lambda v: self.update(axis, v))
+        self._handles[axis] = (ax, slider)
+
+    @staticmethod
+    def _no_update(axis, value):
+        pass
+
+    def reset(self):
+        # suppress updates during reset
+        # Note: should be able to do this by setting slider.active to False or
+        # disconnecting events during reset, then reactivating when the loop
+        # is complete but neither method was working.
+        cached_update = self.update
+        self.update = self._no_update
+        for axis, (ax, slider) in self._handles.items():
+            # Only update sliders that have changed.
+            new_val = self.query(axis)
+            if slider.val != new_val:
+                #print(axis, "new value", new_val, slider.active)
+                slider.set_val(new_val)
+        self.update = cached_update
+
+def get_zoom(ax):
+    if ax.get_autoscale_on():
+        return ()
+    view = ax.viewLim.get_points()
+    data = ax.dataLim.get_points()
+    if (view[0] <= data[0]).all() and (view[1] >= data[1]).all():
+        return ()
+    return ax.axis()
+
+def set_zoom(ax, limits):
+    if limits:
+        ax.figure.canvas.manager.toolbar.push_current()
+        ax.axis(limits)
+
+def make_sliders():
+    sample = {
+        'sample_width': 10.,
+        'sample_offset': 0.,
+        'sample_diffuse': 0.0,
+        'sample_slit_offset': 0.0,
+        'detector_slit_offset': 0.0,
+        'refl': fake_sample(),
+        'trace': True,
+    }
+    count = 150
+    candor = Candor()
+    def update(axis, value):
+        #print("moving", axis, value)
+        if axis in sample:
+            sample[axis] = value
+        else:
+            candor.move(**{axis: value})
+        # If changing Q then force recalculation of sample/detector angle
+        #if axis in ("Q_x", "Q_z"):
+        if axis.startswith("Q_"):
+            candor.move(sampleAngleMotor=None, detectorTableMotor=None)
+        n = simulate(counts=count, **sample)
+        if axis.startswith("Q_"):
+            sliders.reset()
+        fig = pylab.figure(2)
+        limits = get_zoom(fig.gca())
+        pylab.clf()
+        n.plot_trace(split=False)
+        set_zoom(fig.gca(), limits)
+        pylab.gcf().canvas.draw_idle()
+
+    def query(axis):
+        return sample[axis] if axis in sample else candor[axis]
+
+    slider_set = (
+        ('sample_width', (0, 100), 'sample width (mm)'),
+        ('sample_offset', (0, 100), 'sample offset (mm)'),
+        #('sample_diffuse', (0, 1), 'diffuse portion'),
+        ('Q_x', (0, 0.1), r'$Q_x$ 1/Ang'),
+        ('Q_z', (0, 1.0), r'$Q_z$ 1/Ang'),
+        ('sampleAngleMotor', (0, 20), r'$\theta$ ($^\circ$)'),
+        ('detectorTableMotor', (0, 20), r'$2\theta$ ($^\circ$)'),
+        ('slitAperture1', (0, 100), 'slit 1 (mm)'),
+        ('slitAperture2', (0, 100), 'slit 2 (mm)'),
+        ('slitAperture3', (0, 100), 'slit 3 (mm)'),
+        ('sample_slit_offset', (-100, 100), 'slit 2 offset (mm)'),
+        ('detector_slit_offset', (-100, 100), 'slit 3 offset (mm)'),
+    )
+    n_sliders = len(sample)
+    pylab.figure(1)
+    sliders = SliderSet(len(slider_set), update, query)
+    for name, limits, label in slider_set:
+        value = sample[name] if name in sample else candor[name]
+        sliders.add(name, limits=limits, value=value, label=label)
+    pylab.figure(2)
+    return sliders
 
 def scan_demo(count=100):
     pylab.subplot(2, 2, 1)
@@ -941,7 +1064,11 @@ def main():
         print("incident angle in degrees required")
         sys.exit(1)
     theta = float(sys.argv[1])
+    pylab.figure(1)
+    sliders = make_sliders()
+    pylab.figure(2)
     single_point_demo(theta=theta, count=1500)
+    sliders.reset()
     #scan_demo(150)
     #pylab.axis('equal')
     pylab.show()
