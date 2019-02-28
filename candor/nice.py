@@ -3,8 +3,9 @@
 # Author: Paul Kienzle
 
 import re
-
 import time
+import json
+import bz2
 
 from typing import Dict, List, Tuple, Any, Optional, Union
 
@@ -123,7 +124,7 @@ class Experiment(Device):
             "note": "Research participants",
             "type": "string"
         },
-        "proposalId": {
+        "proposalID": {
             "label": "experiment proposal id",
             "mode": "configure",
             "note": "Proposal number",
@@ -150,7 +151,7 @@ class Experiment(Device):
     instrument = ""
     localContact = ""
     participants = ""
-    proposalId = "nonims1"
+    proposalID = "nonims1"
     publishMode = "NORMAL"
     title = ""
 
@@ -1008,23 +1009,17 @@ class Instrument(object):
     trajectory = None  # type: Trajectory
     trajectoryData = None  # type: TrajectoryData
 
-    experimentPointID = 0
-    experimentScanID = 0
-    instrumentScanID = 0
-    trajectoryID = 0
-    last_data = None # type: Dict[str, Any]
-
     def __new__(cls, *args, **kwargs):
         if not isinstance(cls._singleton, cls):
             cls._singleton = object.__new__(cls, *args, **kwargs)
         return cls._singleton
 
     def __init__(self):
-        self.last_data = {}
         # derived class should define these
         #self.experiment = Experiment("CANDOR")
         #self.trajectory = Trajectory()
         #self.trajectoryData = TrajectoryData()
+        pass
 
     @classmethod
     def set_device_ids(cls):
@@ -1086,18 +1081,6 @@ class Instrument(object):
                 raise AttributeError("Node %s.%s does not exist", device_id, node_id)
             setattr(device, node_id, v)
 
-    def get_delta(self):
-        # type: () -> Dict[str, Any]
-        """
-        Return a dictionary of changed nodes since the last time delta was
-        called. The delta is reset on :meth:`config_record`.
-        """
-        data = self.get_data()
-        result = {k: v for k, v in data.items()
-                  if v != self.last_data.get(k, None)}
-        self.last_data = data
-        return result
-
     def _lookup(self, key):
         device_id, node_id = key.split('_', 1) if '_' in key else (key, None)
         device = getattr(self, device_id, None)  # type: Device
@@ -1129,18 +1112,58 @@ class Instrument(object):
         device, node_id = self._lookup(key)
         return getattr(device, node_id)
 
+
+class StreamWriter:
+    instrument = None # type: Instrument
+    timestamp = 0. # type: float
+    last_data = None # type: Dict[str, Any]
+
+    @property
+    def trajectoryID(self):
+        return self.instrument.trajectory.trajectoryID
+
+    @property
+    def entryID(self):
+        return self.instrument.trajectory.entryID
+
+    @property
+    def proposalID(self):
+        return self.instrument.experiment.proposalID
+
+    def __init__(self, instrument, timestamp=0):
+        self.instrument = instrument
+        self.timestamp = timestamp
+        self.last_data = {}
+
+    def get_delta(self):
+        # type: () -> Dict[str, Any]
+        """
+        Return a dictionary of changed nodes since the last time delta was
+        called. The delta is reset with reset_delta()
+        """
+        data = self.instrument.get_data()
+        result = {k: v for k, v in data.items()
+                  if v != self.last_data.get(k, None)}
+        self.last_data = data
+        return result
+
+    def reset_delta(self):
+        # type: () -> None
+        """
+        Reset the data for get_delta().
+        """
+        self.last_data = self.instrument.get_data()
+
     def config_record(self, timestamp):
         # type: (int) -> Dict[str, Any]
-        self.last_data = self.get_data()
-        self.trajectoryID += 1
-        self.trajectory.trajectoryID = self.trajectoryID
+        self.reset_delta()
         result = {
             'command': "Configure",
-            'devices': self.device_config(),
+            'devices': self.instrument.device_config(),
             'data': self.last_data,
             #'errors': {}
-            'experiment': self.experiment.proposalId,
-            'nexus': self.nexus,
+            'experiment': self.proposalID,
+            'nexus': self.instrument.nexus,
             'time': timestamp,
             'version': "1.0",
         }
@@ -1151,7 +1174,7 @@ class Instrument(object):
         result = {
             'command': "Open",
             'data': self.get_delta(),
-            'scan': self.trajectory.entryID,
+            'scan': self.entryID,
             'time': timestamp,
         }
         return result
@@ -1162,17 +1185,17 @@ class Instrument(object):
             'command': "State",
             'data': self.get_delta(),
             'restart': False,
-            'scan': self.trajectory.entryID,
+            'scan': self.entryID,
             'time': timestamp,
         }
         return result
 
-    def count_record(self, timestamp):
+    def counts_record(self, timestamp):
         # type: (int) -> Dict[str, Any]
         result = {
             'command': "Counts",
             'data': self.get_delta(),
-            'scan': self.trajectory.entryID,
+            'scan': self.entryID,
             'time': timestamp,
         }
         return result
@@ -1190,7 +1213,7 @@ class Instrument(object):
         # type: (int) -> Dict[str, Any]
         result = {
             'command': "Close",
-            'scan': self.trajectory.entryID,
+            'scan': self.entryID,
             'time': timestamp,
         }
         return result
@@ -1202,6 +1225,57 @@ class Instrument(object):
             'time': timestamp,
         }
         return result
+
+    def config(self, delta=0):
+        # type: (int, str, int, float) -> None
+        stream_file = str(self.trajectoryID) + '.stream.bz2'
+        self.file = bz2.open(stream_file, 'wt', newline='\n', encoding='utf-8')
+        self.timestamp += delta
+        record = self.config_record(self.timestamp)
+        json.dump(record, self.file)
+        self.file.write('\n')
+
+    def open(self, delta=0):
+        self.timestamp += delta
+        record = self.open_record(self.timestamp)
+        json.dump(record, self.file)
+        self.file.write('\n')
+
+    def state(self, delta=5):
+        self.timestamp += delta
+        record = self.state_record(self.timestamp)
+        json.dump(record, self.file)
+        self.file.write('\n')
+
+    def counts(self, delta=None):
+        # default measurement duration to the value of the measurement device
+        if delta is None:
+            delta = self.instrument.counter.liveTime
+        self.instrument.counter.startTime = self.timestamp
+        self.timestamp += delta
+        self.instrument.counter.stopTime = self.timestamp
+        record = self.counts_record(self.timestamp)
+        json.dump(record, self.file)
+        self.file.write('\n')
+
+    def close(self, delta=0):
+        self.timestamp += delta
+        record = self.close_record(self.timestamp)
+        json.dump(record, self.file)
+        self.file.write('\n')
+
+    def log(self, delta):
+        self.timestamp += delta
+        record = self.log_record(self.timestamp)
+        json.dump(record, self.file)
+        self.file.write('\n')
+
+    def end(self, delta=0):
+        self.timestamp += delta
+        record = self.end_record(self.timestamp)
+        json.dump(record, self.file)
+        self.file.write('\n')
+        self.file.close()
 
 
 def trajectory_variable_to_text(identifier):

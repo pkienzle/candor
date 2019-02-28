@@ -14,6 +14,9 @@ from numpy import (sin, cos, tan, arcsin, arccos, arctan, arctan2, radians, degr
 from numpy import pi, inf
 import pylab
 
+from . import mpl_controls
+from . import qcalc
+from . import nice
 from .instrument import Candor, candor_setup, comb, detector_mask
 #from .nice import Instrument, Motor
 
@@ -469,181 +472,6 @@ def source_divergence(source_slit_z, source_slit_w,
         min_angle = min(pre_lo, sample_lo)
     return degrees(max(abs(max_angle), abs(min_angle)))
 
-def angle_to_qxz(sample_theta, detector_theta, sample_lambda=5., detector_lambda=5.):
-    lambda_i, lambda_f = sample_lambda, detector_lambda
-    theta_i, theta_f = 0. - sample_theta, detector_theta - sample_theta
-    k_ix = 2 * pi / lambda_i * cos(radians(theta_i))
-    k_iz = 2 * pi / lambda_i * sin(radians(theta_i))
-    k_fx = 2 * pi / lambda_f * cos(radians(theta_f))
-    k_fz = 2 * pi / lambda_f * sin(radians(theta_f))
-    qx = k_fx - k_ix
-    qz = k_fz - k_iz
-    return qx, qz
-
-def clip_angle(theta):
-    return np.remainder(theta + 180, 360) - 180
-
-def same_sign(x, y):
-    return sign(x) == sign(y) or abs(x) < 1e-10 or abs(y) < 1e-10
-
-def qxz_to_angle(qx, qz, sample_lambda=5., detector_lambda=5.):
-    """
-    Algorithm
-    ---------
-    Using the following:
-
-    $q = k_i - k_f$
-
-    $[k_{ix}, k_{iz}]^T = \tfrac{2\pi}{\lambda_i} [\cos\theta_i, \sin\theta_i]^T$
-
-    $[k_{fx}, k_{fz}]^T = \tfrac{2\pi}{\lambda_f} [\cos\theta_f, \sin\theta_f]^T$
-
-    solve for $\theta_f$,  giving:
-
-    $\cos\theta_f = \lambda_f q_x/2\pi + \tfrac{\lambda_f}{\lambda_i}\cos \theta_i$
-
-    $\sin\theta_f = \lambda_f q_z/2\pi + \tfrac{\lambda_f}{\lambda_i}\sin \theta_i$
-
-    With some trig substitutions we get:
-
-    $(\lambda_i q_x/2\pi + \cos\theta_i)^2 + (\lambda_i q_z/2\pi + \sin\theta_i)^2 = (\tfrac{\lambda_i}{\lambda_f})^2$
-
-    Letting $X = \lambda_i q_x/2\pi$, $Z = \lambda_i q_z/2\pi$, $C = (\tfrac{\lambda_i}{\lambda_f})^2$,
-    and solving for $\theta_i$ gives:
-
-    .. math::
-
-        \tan \theta_i/2 = \frac{
-            2 Z \pm \sqrt{2(C+1)(X^2 + Z^2) - (X^2 + Z^2)^2 - (C-1)^2}
-        }{
-            2 X - (X^2 + Z^2) + (C - 1)
-        }
-
-    and
-
-    .. math::
-
-        \sin \theta_f = q_z \lambda_f + \tfrac{\lambda_f}{\lambda_i}\sin \theta_i
-    """
-    # Use zero angles for q near zero
-    if abs(qx) < 1e-10 and abs(qz) < 1e-10:
-        return 0., 0.
-    lambda_i, lambda_f = sample_lambda, detector_lambda
-    kx, kz = qx/(2*pi), qz/(2*pi)
-
-    # Solving the following:
-    #   (lambda_i k_z + sin theta_i)^2 + (lambda_i k_x + cos theta_i)^2 = (lambda_i/lambda_f)^2
-
-
-    # Construct quadratic solution parts
-    X, Z = kx*lambda_i, kz*lambda_i
-    C = (lambda_i/lambda_f)**2
-    discriminant = 2*(C+1)*(X**2+Z**2) - (X**2 + Z**2)**2 - (C-1)**2
-    if discriminant < 0:
-        warn("unsolvable position (qx, qz) = (%g,%g); discriminant is %g"
-             %(qx, qz, discriminant))
-        discriminant = 0.
-    scale = 2*X - (X**2 + Z**2) + (C - 1)
-
-    # Plus root discriminant solution
-    theta_ip = 2*arctan2(2*Z + sqrt(discriminant), scale)
-    theta_fp = arcsin(kz*lambda_f + lambda_f/lambda_i*sin(theta_ip))
-    # Note that theta_i is (usually) negative, so sample angle is -theta_i
-    # and detector angle is theta_f - theta_i.
-    sample_theta_p = clip_angle(degrees(-theta_ip))
-    detector_theta_p = clip_angle(degrees(theta_fp - theta_ip))
-    same_sign_p = same_sign(sample_theta_p, detector_theta_p)
-    distance_p = sqrt(sample_theta_p**2 + detector_theta_p**2)
-    result_p = sample_theta_p, detector_theta_p
-
-    # Minus root discriminant solution
-    theta_im = 2*arctan2(2*Z - sqrt(discriminant), scale)
-    theta_fm = arcsin(kz*lambda_f + lambda_f/lambda_i*sin(theta_im))
-    # Note that theta_i is (usually) negative, so sample angle is -theta_i
-    # and detector angle is theta_f - theta_i.
-    sample_theta_m = clip_angle(degrees(-theta_im))
-    detector_theta_m = clip_angle(degrees(theta_fm - theta_im))
-    same_sign_m = same_sign(sample_theta_m, detector_theta_m)
-    distance_m = sqrt(sample_theta_m**2 + detector_theta_m**2)
-    result_m = sample_theta_m, detector_theta_m
-
-    # Prefer solution with with the same sign on the angles, or if both have
-    # the same sign, choose the one with the smallest angles.  Treat values
-    # near zero is treated as the sign of the other value.
-    #print(result_m, result_p)
-    if same_sign_m == same_sign_p:
-        return result_p if distance_p <= distance_m else result_m
-    elif same_sign_p:
-        return result_p
-    elif same_sign_m:
-        return result_m
-    else:
-        raise RuntimeError("unreachable code")
-
-def qxz_to_angle_nice(qx, qz, sample_lambda=5., detector_lambda=5.):
-    # Use zero angles for q near zero
-    if abs(qx) < 1e-10 and abs(qz) < 1e-10:
-        return 0., 0.
-    lambda_i, lambda_f = sample_lambda, detector_lambda
-    k_i, k_f = 2 * pi / lambda_i, 2 * pi / lambda_f
-    qsq = qx**2 + qz**2
-    A = k_f**2 - k_i**2 - qsq
-    zl = - qz * A / (2 * qsq)
-    zrsq = zl**2 + qx**2 * k_i**2 / qsq - (A/2)**2 / qsq
-    if zrsq < 0:
-        warn("unsolvable position (qx, qz) = (%g,%g); discriminant is %g"
-             %(qx, qz, zrsq))
-        zrsq = 0.
-    zr = sqrt(zrsq)
-
-    z_p = zl + zr
-    x_p = -(A + 2*qz*z_p)/(2 * qx)
-    sample_theta_p = arctan2(z_p, -x_p)
-    detector_theta_p = arctan2(qz - z_p, qx - x_p) + sample_theta_p
-    sample_theta_p = clip_angle(degrees(sample_theta_p))
-    detector_theta_p = clip_angle(degrees(detector_theta_p))
-    result_p = sample_theta_p, detector_theta_p
-    same_sign_p = same_sign(sample_theta_p, detector_theta_p)
-    distance_p = sqrt(sample_theta_p**2 + detector_theta_p**2)
-
-    z_m = zl - zr
-    x_m = -(A + 2*qz*z_m)/(2 * qx)
-    sample_theta_m = arctan2(z_m, -x_m)
-    detector_theta_m = arctan2(qz - z_m, qx - x_m) + sample_theta_m
-    sample_theta_m = clip_angle(degrees(sample_theta_m))
-    result_m = sample_theta_m, detector_theta_m
-    detector_theta_m = clip_angle(degrees(detector_theta_m))
-    same_sign_m = same_sign(sample_theta_m, detector_theta_m)
-    distance_m = sqrt(sample_theta_m**2 + detector_theta_m**2)
-
-    # Prefer solution with with the same sign on the angles, or if both have
-    # the same sign, choose the one with the smallest angles.  Treat values
-    # near zero is treated as the sign of the other value.
-    #print(result_m, result_p)
-    if same_sign_m == same_sign_p:
-        return result_p if distance_p <= distance_m else result_m
-    elif same_sign_p:
-        return result_p
-    elif same_sign_m:
-        return result_m
-    else:
-        raise RuntimeError("unreachable code")
-#qxz_to_angle = qxz_to_angle_nice
-
-def _check_qxz_to_angle(tol=1e-8):
-    wavelengths = 4.0, 5.0
-    # random angles in [-45, +45], with incident matching reflected
-    angles = np.random.rand(2)*45*np.random.choice([-1, 1])
-    #angles[0] = 0
-    #angles[1] = 0
-    qxz = angle_to_qxz(angles[0], angles[1], wavelengths[0], wavelengths[1])
-    result = qxz_to_angle(qxz[0], qxz[1], wavelengths[0], wavelengths[1])
-    error = np.linalg.norm(angles - result)/np.linalg.norm(angles)
-    if error > tol:
-         print("round trip fails for (%g, %g) => (%g, %g) with error %g"
-               % (angles[0], angles[1], result[0], result[1], error))
-    #assert error < tol
-
 def simulate(counts, trace=False,
         sample_width=10., sample_offset=0., sample_diffuse=0.,
         sample_slit_offset=0., detector_slit_offset=0.,
@@ -693,13 +521,13 @@ def simulate(counts, trace=False,
     if candor.Q.x is None or candor.Q.z is None:
         theta_i = sample_angle + beam_offset
         theta_f = detector_table_angle + bank_angle
-        qx, qz = angle_to_qxz(theta_i, theta_f, lambda_i, lambda_f)
+        qx, qz = qcalc.angle_to_qxz(theta_i, theta_f, lambda_i, lambda_f)
         candor.Q.x, candor.Q.z = qx, qz
         #print("angles to qx, qz")
     if sample_angle is None or detector_table_angle is None:
         L = target_wavelength
         qx, qz = candor.Q.x, candor.Q.z
-        theta_i, theta_f = qxz_to_angle(qx, qz, lambda_i, lambda_f)
+        theta_i, theta_f = qcalc.qxz_to_angle(qx, qz, lambda_i, lambda_f)
         sample_angle = theta_i - beam_offset
         detector_table_angle = theta_f - bank_angle
         candor.move(
@@ -827,7 +655,7 @@ def fake_sample():
     #pylab.semilogy(refl(np.linspace(0, 0.2, 1000))); pylab.show(); sys.exit()
     return refl
 
-def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
+def single_point_demo(theta=2.5, count=150, trace=False):
     #count = 10
     sample_width, sample_offset = 100., 0.
     #sample_width, sample_offset, source_slit = 2., 0., 0.02
@@ -927,68 +755,7 @@ def single_point_demo(theta=2.5, count=150, trace=True, plot=True, split=False):
         trace=trace,
     )
 
-    if plot:
-        n.plot_trace(split=split)
-        pylab.title('sample width=%g'%sample_width)
-        #pylab.axis('equal')
-
-class SliderSet:
-    def __init__(self, n, update, query=None):
-        self._handles = {}
-        self._connectors = {}
-        self.k = 0
-        self.n = n
-        self.update = update
-        self.query = query
-
-    def add(self, axis, limits=None, value=None, label=None):
-        # Delayed import, in case we are not running with matplotlib available
-        from matplotlib.widgets import Slider
-        from matplotlib import pyplot
-        if self.k >= self.n:
-            raise RuntimeError("too many sliders")
-        if label is None:
-            label = axis
-        if value is None:
-            value = limits[0]
-        self.k += 1
-        ax = pyplot.subplot(self.n, 2, 2*self.k)
-        slider = Slider(ax, label, limits[0], limits[1], valinit=value)
-        slider.on_changed(lambda v: self.update(axis, v))
-        self._handles[axis] = (ax, slider)
-
-    @staticmethod
-    def _no_update(axis, value):
-        pass
-
-    def reset(self):
-        # suppress updates during reset
-        # Note: should be able to do this by setting slider.active to False or
-        # disconnecting events during reset, then reactivating when the loop
-        # is complete but neither method was working.
-        cached_update = self.update
-        self.update = self._no_update
-        for axis, (ax, slider) in self._handles.items():
-            # Only update sliders that have changed.
-            new_val = self.query(axis)
-            if slider.val != new_val:
-                #print(axis, "new value", new_val, slider.active)
-                slider.set_val(new_val)
-        self.update = cached_update
-
-def get_zoom(ax):
-    if ax.get_autoscale_on():
-        return ()
-    view = ax.viewLim.get_points()
-    data = ax.dataLim.get_points()
-    if (view[0] <= data[0]).all() and (view[1] >= data[1]).all():
-        return ()
-    return ax.axis()
-
-def set_zoom(ax, limits):
-    if limits:
-        ax.figure.canvas.manager.toolbar.push_current()
-        ax.axis(limits)
+    return n
 
 def make_sliders():
     sample = {
@@ -1016,10 +783,10 @@ def make_sliders():
         if axis.startswith("Q_"):
             sliders.reset()
         fig = pylab.figure(2)
-        limits = get_zoom(fig.gca())
+        limits = mpl_controls.get_zoom(fig.gca())
         pylab.clf()
         n.plot_trace(split=False)
-        set_zoom(fig.gca(), limits)
+        mpl_controls.set_zoom(fig.gca(), limits)
         pylab.gcf().canvas.draw_idle()
 
     def query(axis):
@@ -1041,36 +808,66 @@ def make_sliders():
     )
     n_sliders = len(sample)
     pylab.figure(1)
-    sliders = SliderSet(len(slider_set), update, query)
+    sliders = mpl_controls.SliderSet(len(slider_set), update, query)
     for name, limits, label in slider_set:
         value = sample[name] if name in sample else candor[name]
         sliders.add(name, limits=limits, value=value, label=label)
     pylab.figure(2)
     return sliders
 
-def scan_demo(count=100):
-    pylab.subplot(2, 2, 1)
-    single_point_demo(0.5, count)
-    pylab.subplot(2, 2, 2)
-    single_point_demo(1.0, count)
-    pylab.subplot(2, 2, 3)
-    single_point_demo(1.7, count)
-    pylab.subplot(2, 2, 4)
-    single_point_demo(2.5, count)
+def scan_demo():
+    #: counts per second when slits set for theta at 1 degree.
+    rate = 1000.0
+    #: number of seconds per point
+    count_time = 60.0
+
+    candor = Candor()
+    stream = nice.StreamWriter(candor)
+
+    # set initial motor positions then open trajectory
+    candor.move(
+        trajectory_trajectoryID=1,
+        trajectory_entryID='demo:unpolarized',
+        trajectory_length=4,
+        trajectory_scanLength=4,
+        )
+    n = single_point_demo(theta=0.5, count=0)
+    stream.config()
+    stream.open()
+
+    # run the points
+    for theta in (0.5, 1.0, 1.7, 2.5):
+        count = int(theta*rate*count_time)
+        n = single_point_demo(theta=0.5, count=count)
+        stream.state()
+        candor.move(
+            counter_liveMonitor=count//10,
+            counter_liveTime=count_time,
+            )
+        stream.counts()
+
+    # close the trajectory
+    stream.close()
+    stream.end()
 
 def main():
     candor_setup()
     if len(sys.argv) < 2:
-        print("incident angle in degrees required")
+        print("incident angle in degrees required, or 'scan' for scan demo")
         sys.exit(1)
+    if sys.argv[1] == 'scan':
+        scan_demo()
+        return
     theta = float(sys.argv[1])
     pylab.figure(1)
     sliders = make_sliders()
     pylab.figure(2)
-    single_point_demo(theta=theta, count=1500)
+    n = single_point_demo(theta=theta, count=1500, trace=True)
+    n.plot_trace(split=False)
+    #pylab.title('sample width=%g'%sample_width)
+    #pylab.axis('equal')
     sliders.reset()
     #scan_demo(150)
-    #pylab.axis('equal')
     pylab.show()
     sys.exit()
 
