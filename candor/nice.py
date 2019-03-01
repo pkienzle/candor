@@ -2,15 +2,34 @@
 # -*- coding: UTF-8 -*-
 # Author: Paul Kienzle
 
+import os
+import sys
 import re
 import time
 import json
 import bz2
+import copy
+from warnings import warn
 
 from typing import Dict, List, Tuple, Any, Optional, Union
 
 from numpy import inf
 import numpy as np
+
+from . import relaxed_json
+
+# TODO: check types on devices when creating instrument
+# allowed: bool, string, float32, int32, time, enum?, map<type,type>, type[]
+
+DEFAULT_VALUE = {
+    'bool': False,
+    'string': '',
+    'string[]': [],
+    'int32': 0,
+    'float32': 0.,
+    'float32[]': [],
+    'int32[]': [],
+}
 
 class Device(object):
     # Note: using "private" names for device level properties so that the
@@ -62,10 +81,11 @@ class Device(object):
                                      %(self._device_id, name))
             dtype = node['type']
             if dtype.endswith('[]'):
+                shape = node.get('shape', None)
                 if dtype.startswith('int'):
-                    value = np.asarray(value, 'i')
+                    value = np.asarray(value, 'i').reshape(shape)
                 elif dtype.startswith('float'):
-                    value = np.asarray(value, 'd')
+                    value = np.asarray(value, 'd').reshape(shape)
         #print("setting", name, "to", repr(value), "in", self._type)
         self.__dict__[name] = value
 
@@ -78,8 +98,13 @@ class Virtual(Device):
         self._primary = primary
         self._nodes = fields
         self._type = type
-        for k in self._nodes:
-            setattr(self, k, None)
+        for k, v in self._nodes.items():
+            dtype = v['type']
+            if dtype.startswith('map'):
+                dtype_default = []
+            else:
+                dtype_default = DEFAULT_VALUE.get(dtype, None)
+            setattr(self, k, dtype_default)
         if default is not None:
             for k, v in default.items():
                 setattr(self, k, v)
@@ -124,7 +149,7 @@ class Experiment(Device):
             "note": "Research participants",
             "type": "string"
         },
-        "proposalID": {
+        "proposalId": {
             "label": "experiment proposal id",
             "mode": "configure",
             "note": "Proposal number",
@@ -151,7 +176,7 @@ class Experiment(Device):
     instrument = ""
     localContact = ""
     participants = ""
-    proposalID = "nonims1"
+    proposalId = "nonims1"
     publishMode = "NORMAL"
     title = ""
 
@@ -304,15 +329,18 @@ class Trajectory(Device):
     command = "inittraj {\"counter.countAgainst\"=\"TIME\"}"
     config = ""
     configFile = "/usr/local/nice/server_data/experiments/22305/trajectories/spec_fixed2.json"
-    controlVariables = ["detectorAngle.softPosition", "sampleAngle.softPosition", "slitAperture1.softPosition", "slitAperture2.softPosition", "slitAperture3.softPosition", "slitAperture4.softPosition"]
-    dataStream = "/usr/local/nice/server_data/experiments/22305/streams/64975.stream.bz2"
+    #controlVariables = ["detectorAngle.softPosition", "sampleAngle.softPosition", "slitAperture1.softPosition", "slitAperture2.softPosition", "slitAperture3.softPosition", "slitAperture4.softPosition"]
+    #scannedVariables = ["counter.primaryNode", "counter.timePreset", "detectorAngle.softPosition", "q.z", "sampleAngle.softPosition", "trajectoryData._q", "trajectoryData._w"]
+    controlVariables = []
+    scannedVariables = []
+    dataStream = ""
     defaultXAxisPlotNode = ""
     defaultYAxisNormalizationChannel = -1
     defaultYAxisNormalizationNode = ""
     defaultYAxisPlotChannel = -1
     defaultYAxisPlotNode = "counter.liveROI"
-    entryID = "Grating225_Air3282:unpolarized"
-    estimatedTime = 14349.335000000001
+    entryID = "entry"
+    estimatedTime = 1.0
     experimentPointID = 6220
     experimentScanID = 19
     instrumentScanID = 2949
@@ -320,7 +348,6 @@ class Trajectory(Device):
     name = "spec_fixed2"
     program = "NICE"
     scanLength = 1001
-    scannedVariables = ["counter.primaryNode", "counter.timePreset", "detectorAngle.softPosition", "q.z", "sampleAngle.softPosition", "trajectoryData._q", "trajectoryData._w"]
     trajectoryID = 64975
     version = "0"
 
@@ -467,7 +494,7 @@ class TrajectoryData(Device):
     pointNum = 1001
     skip = False
     trajName = "spec_fixed2"
-    xAxis = "trajectoryData._q"
+    xAxis = ""
     yAxis = "counter.liveROI"
 
 
@@ -524,14 +551,14 @@ class InOut(Device):
                 "label": label,
                 "mode": "state",
                 "note": "Current map key.",
-                "type": "str",
+                "type": "string",
                 "units": ""
             },
             "map": {
                 "label": label+" map",
                 "mode": "configure",
                 "note": "Input key to output value map.  On write, entirely replaces existing map.",
-                "type": "map<str,float32>"
+                "type": "map<string,float32>"
             }
         }
         self.map = ["IN", 0, "OUT", 1]
@@ -793,15 +820,25 @@ class Detector(Device):
     counts = None  # type: List[Union[int, List[int]]]
 
     def __init__(self, description, dimension=None, offset=None, strides=None):
-        self.dimension = [1] if dimension is None else dimension
+        dimension = [1] if dimension is None else dimension[:] # copy
+        strides = (np.cumproduct(np.hstack((1, dimension)))[:-1]
+                   if strides is None else strides)
+        self._nodes = copy.deepcopy(Detector._nodes)
+        self._nodes['dimension']['shape'] = [len(dimension)]
+        self._nodes['strides']['shape'] = [len(strides)]
+        self._nodes['counts']['shape'] = dimension
+        self._nodes['roiMask']['shape'] = dimension
+        self._nodes['sliceCounts']['shape'] = dimension
+        self.dimension = dimension
+        self.strides = strides
         self.offset = 0 if offset is None else offset
-        self.strides = (np.cumproduct(np.hstack((1, self.dimension)))[:-1].tolist()
+        self.strides = (np.cumproduct(np.hstack((1, dimension)))[:-1].tolist()
                         if strides is None else strides)
-        self.roiMask = np.ones(self.dimension).tolist()
+        self.roiMask = np.ones(dimension) #.tolist()
         self.roiShape = ["name", "unknown"]
         self.liveROI = 0.
-        self.counts = np.zeros(self.dimension, 'int32').tolist()
-        self.sliceCounts = np.zeros(self.dimension, 'int32').tolist()
+        self.counts = np.zeros(dimension, 'int32') #.tolist()
+        self.sliceCounts = np.zeros(dimension, 'int32') #.tolist()
 
         self._description = description
 
@@ -1113,6 +1150,25 @@ class Instrument(object):
         return getattr(device, node_id)
 
 
+    def load_nexus(self, nice_root=None):
+        if nice_root is None:
+            here = os.path.realpath(__file__)
+            source_root = os.path.dirname(os.path.dirname(os.path.dirname(here)))
+            nice_root = os.path.join(source_root, 'nice')
+        instrument = self.experiment.instrument.lower()
+        nexus_path = os.path.join(nice_root, 'instrument_configs', instrument,
+                                 'nexus', 'config.js')
+        if not os.path.exists(nexus_path):
+            warn("nexus config not found at %r" % nexus_path)
+            return
+
+        try:
+            from nice.writer import nexus_config
+        except ImportError:
+            sys.path.append(os.path.join(nice_root, 'python'))
+            from nice.writer import nexus_config
+        self.nexus = nexus_config.load(nexus_path)
+
 class StreamWriter:
     instrument = None # type: Instrument
     timestamp = 0. # type: float
@@ -1127,8 +1183,8 @@ class StreamWriter:
         return self.instrument.trajectory.entryID
 
     @property
-    def proposalID(self):
-        return self.instrument.experiment.proposalID
+    def proposalId(self):
+        return self.instrument.experiment.proposalId
 
     def __init__(self, instrument, timestamp=0):
         self.instrument = instrument
@@ -1163,7 +1219,7 @@ class StreamWriter:
             'devices': self.instrument.device_config(),
             'data': self.last_data,
             #'errors': {}
-            'experiment': self.proposalID,
+            'experiment': self.proposalId,
             'nexus': self.instrument.nexus,
             'time': self.timestamp,
             'version': "1.0",
@@ -1237,45 +1293,42 @@ class StreamWriter:
         }
         return result
 
-    def config(self, delta=0):
-        # type: (int, str, int, float) -> None
-        stream_file = str(self.trajectoryID) + '.stream.bz2'
-        self.file = bz2.open(stream_file, 'wt', newline='\n', encoding='utf-8')
-        record = self.config_record(delta)
+    def _dump(self, record):
         json.dump(record, self.file)
         self.file.write('\n')
+
+    def config(self, delta=0):
+        # type: (int, str, int, float) -> None
+        data_stream = str(self.trajectoryID) + '.stream.bz2'
+        self.file = bz2.open(data_stream, 'wt', newline='\n', encoding='utf-8')
+        self.instrument.trajectory.dataStream = data_stream
+        record = self.config_record(delta)
+        self._dump(record)
 
     def open(self, delta=0):
         record = self.open_record(delta)
-        json.dump(record, self.file)
-        self.file.write('\n')
+        self._dump(record)
 
     def state(self, delta=5):
         record = self.state_record(delta)
-        json.dump(record, self.file)
-        self.file.write('\n')
+        self._dump(record)
 
     def counts(self, delta=None):
         # default measurement duration to the value of the measurement device
         record = self.counts_record(delta)
-        json.dump(record, self.file)
-        self.file.write('\n')
+        self._dump(record)
 
     def close(self, delta=0):
-        self.timestamp += delta
         record = self.close_record(delta)
-        json.dump(record, self.file)
-        self.file.write('\n')
+        self._dump(record)
 
     def log(self, delta=0):
         record = self.log_record(delta)
-        json.dump(record, self.file)
-        self.file.write('\n')
+        self._dump(record)
 
     def end(self, delta=0):
         record = self.end_record(delta)
-        json.dump(record, self.file)
-        self.file.write('\n')
+        self._dump(record)
         self.file.close()
 
 
@@ -1299,3 +1352,4 @@ def uncapitalize(s):
         return s
     else:
         return s.lower()
+

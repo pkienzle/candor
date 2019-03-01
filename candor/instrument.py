@@ -529,7 +529,7 @@ class Candor(Instrument):
     attenuator = Map(label="attenuator", types=("int32", "float32"), description="CANDOR available attenuators.")
     attenuatorMotor = Motor(label="attenuator motor", units="cm", description="CANDOR attenuator motor.")
     counter = Counter()
-    detectorMaskMap = Map(label="detector mask", types=("str", "float32"), description="")
+    detectorMaskMap = Map(label="detector mask", types=("string", "float32"), description="")
     detectorMaskMotor = Motor(description="Vertically translates a mask over all detectors allowing for varying beam widths.", label="detector mask motor", units="mm")
     detectorTableMotor = Motor(description="Scattering Angle", label="detector table motor", units="degree")
     experiment = Experiment("CANDOR")
@@ -540,10 +540,10 @@ class Candor(Instrument):
     polarizerTrans = Motor(description="Translates the polarizer in and out of the beam", label="polarizer trans", units="mm")
     rateMeter = RateMeter()
     sampleAngleMotor = Motor(description="Sample rotation", label="sample angle", units="degree")
-    sampleIndexToDescription = Map(label="sample index to description", types=("int32", "str"), description="")
-    sampleIndexToID = Map(label="sample index to ID", types=("int32", "str"), description="")
+    sampleIndexToDescription = Map(label="sample index to description", types=("int32", "string"), description="")
+    sampleIndexToID = Map(label="sample index to ID", types=("int32", "string"), description="")
     sampleIndexToMass = Map(label="sample index to mass", types=("int32", "float32"), description="")
-    sampleIndexToName = Map(label="sample index to name", types=("int32", "str"), description="")
+    sampleIndexToName = Map(label="sample index to name", types=("int32", "string"), description="")
     sampleIndexToThickness = Map(label="sample index to thickness", types=("int32", "float32"), description="")
     sampleTiltX = Motor(description="sample lower tilt", label="sample tilt x", units="degree")
     sampleTiltY = Motor(description="sample upper tilt", label="sample tilt y", units="degree")
@@ -589,6 +589,7 @@ class Candor(Instrument):
 for k, v in devices.items():
     setattr(Candor, k, Virtual(**v))
 Candor.set_device_ids()
+del Candor.ttl # skip this for now since it isn't needed for reduction
 
 def load_spectrum():
     """
@@ -714,6 +715,7 @@ def candor_setup():
 
     # Initialize candor with fixed info fields
     candor = Candor()
+    candor.load_nexus()
     candor.move(
         beam_angularOffsets=degrees(beam_angles),
         detectorTable_angularSpreads=angular_spreads,
