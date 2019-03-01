@@ -5,6 +5,7 @@ import os.path
 import numpy as np
 from numpy import degrees, radians, arctan, arcsin, tan, sqrt
 
+from . import nice
 from .nice import (Motor, Map, Virtual, Instrument, InOut, Counter, Detector,
                    RateMeter, Experiment, Trajectory, TrajectoryData)
 
@@ -510,18 +511,21 @@ class Candor(Instrument):
     POST_SAMPLE_SLIT_Z = 356.0
     DETECTOR_MASK_HEIGHT = 30.
     DETECTOR_MASK_WIDTHS = [10., 8., 6., 4.]
-    DETECTOR_MASK_N = 30
+    DETECTOR_MASK_N = 30  # Must be a multiple of 3
+    #DETECTOR_MASK_N = 3
     DETECTOR_MASK_SEPARATION = 12.84
     DETECTOR_Z = 3496.
     DETECTOR_WIDTH = (DETECTOR_MASK_N+1)*DETECTOR_MASK_SEPARATION
+    DETECTOR_LEAF = 54  # Max of 54
+    #DETECTOR_LEAF = 6  # Max of 54
 
     SOURCE_LOUVER_CENTERS = np.linspace(-1.5*SOURCE_LOUVER_SEPARATION,
-                                        1.5*SOURCE_LOUVER_SEPARATION,
+                                        +1.5*SOURCE_LOUVER_SEPARATION,
                                         SOURCE_LOUVER_N)
     SOURCE_LOUVER_ANGLES = np.arctan2(SOURCE_LOUVER_CENTERS, -SOURCE_LOUVER_Z)
 
     areaDetector = Detector(description="The main area detector for Candor",
-                            dimension=[2, 54], offset=0, strides=[54, 1])
+                            dimension=[DETECTOR_MASK_N//3*2, DETECTOR_LEAF], offset=0, strides=[DETECTOR_LEAF, 1])
     attenuator = Map(label="attenuator", types=("int32", "float32"), description="CANDOR available attenuators.")
     attenuatorMotor = Motor(label="attenuator motor", units="cm", description="CANDOR attenuator motor.")
     counter = Counter()
@@ -594,6 +598,10 @@ def load_spectrum():
     L, I_in = np.loadtxt(os.path.join(datadir, 'CANDOR-incident.dat')).T
     _, I_out = np.loadtxt(os.path.join(datadir, 'CANDOR-detected.dat')).T
     L, I_in, I_out = L[::-1], I_in[::-1], I_out[::-1]
+    # Maybe truncate the detector banks
+    assert len(L) >= Candor.DETECTOR_LEAF
+    s = slice(0, Candor.DETECTOR_LEAF)
+    L, I_in, I_out = L[s], I_in[s], I_out[s]
     return L, I_in, L, I_out/I_in
 
 
@@ -728,15 +736,21 @@ def candor_setup():
 
     return candor
 
-if __name__ == "__main__":
+def demo():
     import time
     T0 = time.mktime(time.strptime("2018-01-01 12:00:00", "%Y-%m-%d %H:%M:%S"))
     candor = candor_setup()
-    print(candor.config_record(T0))
-    print(candor.open_record(T0))
-    print(candor.state_record(T0))
+    stream = nice.StreamWriter(candor, timestamp=T0)
+    # This prints the record to the screen.  To save to a .stream.bz2 file
+    # use the same methods without '_record'.
+    print(stream.config_record())
+    print(stream.open_record())
     candor.sampleAngleMotor.softPosition = 5
-    print(candor.count_record(T0+200))
-    print(candor.close_record(T0+200))
-    print(candor.end_record(T0+200))
+    print(stream.state_record(2.))
+    candor.move(counter_liveMonitor=121, counter_liveTime=200.0)
+    print(stream.counts_record())
+    print(stream.close_record())
+    print(stream.end_record())
 
+if __name__ == "__main__":
+    demo()

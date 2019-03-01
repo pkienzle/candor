@@ -7,6 +7,7 @@ from __future__ import division, print_function
 import sys
 import os
 from warnings import warn
+import time
 
 import numpy as np
 from numpy import (sin, cos, tan, arcsin, arccos, arctan, arctan2, radians, degrees,
@@ -34,6 +35,8 @@ def rotate(xy, theta):
     return np.dot(R, xy)
 
 class Neutrons(object):
+    #: spectrum as [incident wavelength, spectral weight, detector efficiency]
+    spectrum = None  # type: Tuple[np.ndarray, np.ndarray, np.ndarray]
     #: angle of the x-axis relative to source-sample line (rad)
     beam_angle = 0.
     #: x,y position of each neutron, with 0,0 at the center of rotation (mm)
@@ -52,6 +55,15 @@ class Neutrons(object):
     sample_angle = 0.
     #: source beam for each neutron
     source = None # type: np.ndarray
+    #: detector bank for each neutron, or -1 if no detector
+    detector = None # type: np.ndarray
+    #: number of detector banks
+    num_bank = 0
+    #: number of wavelengths per detector bank
+    num_leaf = 0
+    #: poisson-noise based counts, with spectrum, scattering,
+    #: detector efficiency and background included
+    counts = None # type: np.ndarray
 
     @property
     def x(self):
@@ -70,11 +82,15 @@ class Neutrons(object):
     def __init__(self, n, divergence=5., spectrum=None, trace=False):
         # type: (int, float, np.ndarray, float, Union[float, np.ndarray], bool) -> None
         L, I = spectrum[0], spectrum[1]
-        I_weighted = I/np.sum(I)
+        assert L[0] > L[1]  # highest to lowest wavelength assumed
+        L_min, L_max = 1.5*L[-1]-0.5*L[-2], 1.5*L[0]-0.5*L[1]  # limits go half bin beyond
+        #print("limits", L_min, L_max, L[0], L[-1])
+        I_weighted = I/np.mean(I)
 
+        self.spectrum = spectrum
         self.xy = np.zeros((2,n),'d')
         self.angle = (np.random.rand(n)-0.5)*radians(divergence)
-        self.wavelength = np.random.rand(n)*L.ptp() + L.min()
+        self.wavelength = np.random.rand(n)*(L_max-L_min) + L_min
         self.weight = np.interp(self.wavelength, L, I_weighted)
         self.active = (self.x == self.x)
 
@@ -305,22 +321,63 @@ class Neutrons(object):
         each opening is controlled independently.  The spacing between
         the centers is fixed.
         """
-        self.move(z, add_trace=False)
-        self.slit_array(z, comb(n, width, separation))
+        #self.move(z, add_trace=False)
+        self._slit_array(z, comb(n, width, separation))
 
-    def slit_array(self, z, edges, center_angle=0.):
+    def detector_bank(self, z, edges, center_angle=0.):
+        edges = edges - z * tan(radians(center_angle))
+        index = self._slit_array(z, edges)
+        # Record the slit array which each neutron goes through
+        index[self.active] = (index[self.active] - 1)//2
+        index[~self.active] = -1
+        self.detector = index
+        self.num_bank = len(edges)//2
+
+    def dtheta(self):
+        nbank = self.num_bank
+        bank = self.detector[self.active]
+        angle = self.angle[self.active]
+        n = np.bincount(bank, minlength=nbank)
+        sum_x = np.bincount(bank, weights=angle, minlength=nbank)
+        sum_xsq = np.bincount(bank, weights=angle**2, minlength=nbank)
+        mean = sum_x/(n + (n==0))
+        var = sum_xsq/(n + (n==0)) - mean**2
+        self.theta_mean = mean
+        self.theta_std = np.sqrt(var)
+
+    @staticmethod
+    def _rlookup(edges, values):
+        trimmed_edges = edges[1:]
+        index = np.searchsorted(trimmed_edges[::-1], values)
+        ret = len(trimmed_edges) - index
+        return ret
+
+    def count(self, intensity=1., background=0.):
+        nbank = self.num_bank
+        nleaf = len(self.spectrum[2])
+        incident_wavelength = self.wavelength[self.active]
+        weight = self.weight[self.active]
+        bank = self.detector[self.active]
+        leaf = self._rlookup(self.spectrum[2], incident_wavelength)
+        binned = np.bincount(bank*nleaf+leaf, weights=weight, minlength=nbank*nleaf)
+        expected = binned.reshape(nbank, nleaf)*self.spectrum[3] + background
+        self.counts = np.random.poisson(intensity*expected)
+        self.num_leaf = nleaf
+
+    def _slit_array(self, z, edges):
         self.move(z, add_trace=False)
-        edges -= z * tan(radians(center_angle))
         # Searching the neutron x positions in the list of comb edges
         # gives odd indices if they go through the edges, and even indices
         # if they encounter the edges of the comb.
         index = np.searchsorted(edges, self.x)
         self.active &= (index%2 == 1)
         self.add_trace()
+        # Draw the filter
         self.add_element((z, 2*edges[0]-edges[1]), (z, edges[0]))
         for x1, x2 in pairwise(edges[1:-1]):
             self.add_element((z, x1), (z, x2))
         self.add_element((z, edges[-1]), (z, 2*edges[-1]-edges[-2]))
+        return index
 
     def reflect(self, q, r, sample_angle):
         # type: (np.ndarray, np.ndarray, float) -> Neutron
@@ -472,10 +529,10 @@ def source_divergence(source_slit_z, source_slit_w,
         min_angle = min(pre_lo, sample_lo)
     return degrees(max(abs(max_angle), abs(min_angle)))
 
-def simulate(counts, trace=False,
+def simulate(count, trace=False,
         sample_width=10., sample_offset=0., sample_diffuse=0.,
         sample_slit_offset=0., detector_slit_offset=0.,
-        refl=lambda kz: 1.,
+        refl=lambda kz: 1., intensity=1., background=0.,
         ):
     candor = Candor()
 
@@ -536,6 +593,10 @@ def simulate(counts, trace=False,
         #print("qx, qz to angles", lambda_i, lambda_f, theta_i, theta_f)
     detector_angle = detector_table_angle + bank_angle
 
+    # If just moving motors and not counting, then stop early
+    if count == 0:
+        return None
+
     # Proceed with simulation
     has_sample = (sample_width > 0.)
     beam_mode = "single" if has_single else "multiple" if has_multibeam else "spread"
@@ -566,8 +627,8 @@ def simulate(counts, trace=False,
     else:
         spectrum = candor.spectrum
 
-    #counts = 100
-    n = Neutrons(n=counts, trace=trace, spectrum=spectrum, divergence=divergence)
+    #count = 100
+    n = Neutrons(n=count, trace=trace, spectrum=spectrum, divergence=divergence)
     if has_multibeam:
         # Use source louvers
         n.comb_source(Candor.SOURCE_LOUVER_Z, louver,
@@ -632,14 +693,18 @@ def simulate(counts, trace=False,
                       separation=comb_separation)
 
     # Send the neutrons through the detector mask
-    n.slit_array(z=Candor.DETECTOR_Z, edges=detector_mask(detector_mask_width),
-                 center_angle=bank_angle)
+    n.detector_bank(z=Candor.DETECTOR_Z, edges=detector_mask(detector_mask_width),
+                    center_angle=bank_angle)
+    # Poisson simulation of detectors given "count" MC samples
+    n.count(intensity/count, background)
+    n.dtheta()  # compute wavelength divergence for each bank
     n.move(z=Candor.DETECTOR_Z+1000)
     #n.angle_hist()
 
     return n
 
 def fake_sample():
+    from . import abeles
     layers = [
         # depth rho rhoM thetaM phiM
         [ 0, 0.0, 0.0, 270, 0],
@@ -649,13 +714,12 @@ def fake_sample():
     ]
     depth, rho, rhoM, thetaM, phiM = zip(*layers)
     rho = np.array(rho)*1000 #*400
-    #from refl1d import abeles
-    #refl = lambda kz: abs(abeles.refl(kz, depth, rho))**2
-    refl = lambda kz: 0.9*np.ones(kz.shape)
+    refl = lambda kz: abs(abeles.refl(kz, depth, rho))**2
+    #refl = lambda kz: 0.9*np.ones(kz.shape)
     #pylab.semilogy(refl(np.linspace(0, 0.2, 1000))); pylab.show(); sys.exit()
     return refl
 
-def single_point_demo(theta=2.5, count=150, trace=False):
+def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=False):
     #count = 10
     sample_width, sample_offset = 100., 0.
     #sample_width, sample_offset, source_slit = 2., 0., 0.02
@@ -665,14 +729,16 @@ def single_point_demo(theta=2.5, count=150, trace=False):
     #sample_diffuse = 0.01
     sample_diffuse = 0.0
 
-    target_bank = 2  # detector bank to use for angle in Q calculations
-    target_leaf = 20  # detector leaf to use for wavelength in Q calculations
+    target_bank = 1  # detector bank to use for angle in Q calculations
+    target_leaf = 3  # detector leaf to use for wavelength in Q calculations
     target_beam = 1  # beam number (in multibeam mode) to use for Q calculations
 
     #sample_angle = min_sample_angle - degrees(SOURCE_LOUVER_ANGLES[0])
     sample_angle = min_sample_angle
     detector_angle = 2*sample_angle
-    qx, qz = 0., 0.3
+    #sample_angle, detector_angle = None, None
+    qx, qz = None, None
+    #qx, qz = 0., 0.3
 
     sample_slit_offset = 0.
     #sample_slit = choose_sample_slit(louver, sample_width, sample_angle)
@@ -714,7 +780,9 @@ def single_point_demo(theta=2.5, count=150, trace=False):
     sample_slit *= 0.8
     #detector_slit *= 0.02
     candor = Candor()
-    sample_angle, detector_angle = None, None
+    if detector_angle is not None:
+        bank_angle = candor.detectorTable.rowAngularOffsets[target_bank]
+        detector_angle -= bank_angle
     candor.move(
         # info fields
         Q_beamMode="SINGLE_BEAM" if wavelength_mode == "mono" else "WHITE_BEAM",
@@ -746,12 +814,14 @@ def single_point_demo(theta=2.5, count=150, trace=False):
         )
 
     n = simulate(
-        counts=count,
+        count=count,
         sample_width=sample_width,
         sample_offset=sample_offset,
         sample_diffuse=sample_diffuse,
         sample_slit_offset=sample_slit_offset,
         refl=fake_sample(),  # Should replace this with sample scatter
+        intensity=intensity,
+        background=background,
         trace=trace,
     )
 
@@ -779,7 +849,7 @@ def make_sliders():
         #if axis in ("Q_x", "Q_z"):
         if axis.startswith("Q_"):
             candor.move(sampleAngleMotor=None, detectorTableMotor=None)
-        n = simulate(counts=count, **sample)
+        n = simulate(count=count, **sample)
         if axis.startswith("Q_"):
             sliders.reset()
         fig = pylab.figure(2)
@@ -816,33 +886,37 @@ def make_sliders():
     return sliders
 
 def scan_demo():
-    #: counts per second when slits set for theta at 1 degree.
-    rate = 1000.0
+    #: number of monte carlo samples
+    count = 100000
     #: number of seconds per point
     count_time = 60.0
+    #: counts per second for theta at 1 degree
+    rate = 10000
 
+    T0 = time.mktime(time.strptime("2018-01-01 12:00:00", "%Y-%m-%d %H:%M:%S"))
     candor = Candor()
-    stream = nice.StreamWriter(candor)
+    stream = nice.StreamWriter(candor, timestamp=T0)
 
     # set initial motor positions then open trajectory
+    n = single_point_demo(theta=0.5, count=0, intensity=0.)
     candor.move(
         trajectory_trajectoryID=1,
         trajectory_entryID='demo:unpolarized',
         trajectory_length=4,
         trajectory_scanLength=4,
         )
-    n = single_point_demo(theta=0.5, count=0)
     stream.config()
     stream.open()
 
     # run the points
     for theta in (0.5, 1.0, 1.7, 2.5):
-        count = int(theta*rate*count_time)
-        n = single_point_demo(theta=0.5, count=count)
+        intensity = theta*rate*count_time
+        n = single_point_demo(theta, count=count, intensity=intensity)
         stream.state()
         candor.move(
-            counter_liveMonitor=count//10,
+            counter_liveMonitor=np.random.poisson(rate*count_time*0.1),
             counter_liveTime=count_time,
+            areaDetector_counts=n.counts,
             )
         stream.counts()
 
@@ -862,7 +936,8 @@ def main():
     pylab.figure(1)
     sliders = make_sliders()
     pylab.figure(2)
-    n = single_point_demo(theta=theta, count=1500, trace=True)
+    count = 1500
+    n = single_point_demo(theta=theta, count=count, trace=True)
     n.plot_trace(split=False)
     #pylab.title('sample width=%g'%sample_width)
     #pylab.axis('equal')

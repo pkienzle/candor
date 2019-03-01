@@ -1154,8 +1154,9 @@ class StreamWriter:
         """
         self.last_data = self.instrument.get_data()
 
-    def config_record(self, timestamp):
+    def config_record(self, delta=0.):
         # type: (int) -> Dict[str, Any]
+        self.timestamp += delta
         self.reset_delta()
         result = {
             'command': "Configure",
@@ -1164,65 +1165,75 @@ class StreamWriter:
             #'errors': {}
             'experiment': self.proposalID,
             'nexus': self.instrument.nexus,
-            'time': timestamp,
+            'time': self.timestamp,
             'version': "1.0",
         }
         return result
 
-    def open_record(self, timestamp):
+    def open_record(self, delta=0.):
         # type: (int) -> Dict[str, Any]
+        self.timestamp += delta
         result = {
             'command': "Open",
             'data': self.get_delta(),
             'scan': self.entryID,
-            'time': timestamp,
+            'time': self.timestamp,
         }
         return result
 
-    def state_record(self, timestamp):
+    def state_record(self, delta=0.):
         # type: (int) -> Dict[str, Any]
+        self.timestamp += delta
         result = {
             'command': "State",
             'data': self.get_delta(),
             'restart': False,
             'scan': self.entryID,
-            'time': timestamp,
+            'time': self.timestamp,
         }
         return result
 
-    def counts_record(self, timestamp):
+    def counts_record(self, delta=0.):
         # type: (int) -> Dict[str, Any]
+        if delta is None:
+            delta = self.instrument.counter.liveTime
+        self.instrument.counter.startTime = self.timestamp
+        self.timestamp += delta
+        self.instrument.counter.stopTime = self.timestamp
         result = {
             'command': "Counts",
             'data': self.get_delta(),
             'scan': self.entryID,
-            'time': timestamp,
+            'time': self.timestamp,
         }
         return result
 
-    def log_record(self, timestamp):
+    def log_record(self, delta=0.):
         # type: (int) -> Dict[str, Any]
+        self.timestamp += delta
         result = {
             'command': "Log",
             'data': self.get_delta(),
-            'time': timestamp,
+            'time': self.timestamp,
         }
         return result
 
-    def close_record(self, timestamp):
+    def close_record(self, delta=0.):
         # type: (int) -> Dict[str, Any]
+        self.timestamp += delta
         result = {
             'command': "Close",
             'scan': self.entryID,
-            'time': timestamp,
+            'time': self.timestamp,
         }
         return result
 
-    def end_record(self, timestamp):
+    def end_record(self, delta=0.):
         # type: (int) -> Dict[str, Any]
+        self.timestamp += delta
         result = {
             'command': "End",
-            'time': timestamp,
+            'time': self.timestamp,
         }
         return result
 
@@ -1230,49 +1241,39 @@ class StreamWriter:
         # type: (int, str, int, float) -> None
         stream_file = str(self.trajectoryID) + '.stream.bz2'
         self.file = bz2.open(stream_file, 'wt', newline='\n', encoding='utf-8')
-        self.timestamp += delta
-        record = self.config_record(self.timestamp)
+        record = self.config_record(delta)
         json.dump(record, self.file)
         self.file.write('\n')
 
     def open(self, delta=0):
-        self.timestamp += delta
-        record = self.open_record(self.timestamp)
+        record = self.open_record(delta)
         json.dump(record, self.file)
         self.file.write('\n')
 
     def state(self, delta=5):
-        self.timestamp += delta
-        record = self.state_record(self.timestamp)
+        record = self.state_record(delta)
         json.dump(record, self.file)
         self.file.write('\n')
 
     def counts(self, delta=None):
         # default measurement duration to the value of the measurement device
-        if delta is None:
-            delta = self.instrument.counter.liveTime
-        self.instrument.counter.startTime = self.timestamp
-        self.timestamp += delta
-        self.instrument.counter.stopTime = self.timestamp
-        record = self.counts_record(self.timestamp)
+        record = self.counts_record(delta)
         json.dump(record, self.file)
         self.file.write('\n')
 
     def close(self, delta=0):
         self.timestamp += delta
-        record = self.close_record(self.timestamp)
+        record = self.close_record(delta)
         json.dump(record, self.file)
         self.file.write('\n')
 
-    def log(self, delta):
-        self.timestamp += delta
-        record = self.log_record(self.timestamp)
+    def log(self, delta=0):
+        record = self.log_record(delta)
         json.dump(record, self.file)
         self.file.write('\n')
 
     def end(self, delta=0):
-        self.timestamp += delta
-        record = self.end_record(self.timestamp)
+        record = self.end_record(delta)
         json.dump(record, self.file)
         self.file.write('\n')
         self.file.close()
