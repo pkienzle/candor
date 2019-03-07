@@ -16,8 +16,6 @@ from typing import Dict, List, Tuple, Any, Optional, Union
 from numpy import inf
 import numpy as np
 
-from . import relaxed_json
-
 # TODO: check types on devices when creating instrument
 # allowed: bool, string, float32, int32, time, enum?, map<type,type>, type[]
 
