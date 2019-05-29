@@ -543,12 +543,16 @@ def simulate(count, trace=False,
     sample_slit = candor.slitAperture2.softPosition
     detector_slit = candor.slitAperture3.softPosition
     detector_mask_width = float(candor.detectorMaskMap.key)
-    louver = np.array([
-        candor.multiBladeSlit1aMotor.softPosition,
-        candor.multiBladeSlit1bMotor.softPosition,
-        candor.multiBladeSlit1cMotor.softPosition,
-        candor.multiBladeSlit1dMotor.softPosition,
-    ])
+
+
+    ## No longer defining beams for broad multi-beam mode; now continuous
+    #has_multibeam = candor.multiSlit1TransMap.key == "IN"
+    #louver = np.array([
+    #    candor.multiBladeSlit1aMotor.softPosition,
+    #    candor.multiBladeSlit1bMotor.softPosition,
+    #    candor.multiBladeSlit1cMotor.softPosition,
+    #    candor.multiBladeSlit1dMotor.softPosition,
+    #])
 
     target_bank = candor.Q.angleIndex
     target_leaf = candor.Q.wavelengthIndex
@@ -557,9 +561,8 @@ def simulate(count, trace=False,
     detector_table_angle = candor.detectorTableMotor.softPosition
 
     has_converging_guide = candor.convergingGuideMap.key == "IN"
-    has_multibeam = candor.multiSlit1TransMap.key == "IN"
     has_single = candor.singleSlitApertureMap.key == "IN"
-    has_mono = candor.monoTransMap.key == "IN"
+    has_mono = candor.monoTrans.key == "IN"
     mono_wavelength = candor.mono.wavelength
     mono_wavelength_spread = candor.mono.wavelengthSpread
 
@@ -629,13 +632,13 @@ def simulate(count, trace=False,
 
     #count = 100
     n = Neutrons(n=count, trace=trace, spectrum=spectrum, divergence=divergence)
-    if has_multibeam:
-        # Use source louvers
-        n.comb_source(Candor.SOURCE_LOUVER_Z, louver,
-                      Candor.SOURCE_LOUVER_SEPARATION,
-                      focus=Candor.PRE_SAMPLE_SLIT_Z,
-                      )
-    elif has_converging_guide:
+    #if has_multibeam:
+    #    # Use source louvers
+    #    n.comb_source(Candor.SOURCE_LOUVER_Z, louver,
+    #                  Candor.SOURCE_LOUVER_SEPARATION,
+    #                  focus=Candor.PRE_SAMPLE_SLIT_Z,
+    #                  )
+    if has_converging_guide:
         # Convergent guides remove any effects of slit collimation, and so are
         # equivalent to sliding the source toward the sample
         # Ignore divergence and use sample footprint to define beam
@@ -656,15 +659,15 @@ def simulate(count, trace=False,
         #target = 10  # just after sample
         n.slit_source(Candor.SOURCE_SLIT_Z, source_slit, target=target)
 
-    # Play with a pre-sample comb selector (doesn't exist on candor)
-    if False and has_multibeam:
-        comb_z = -1000
-        comb_separation = Candor.SOURCE_LOUVER_SEPARATION*comb_z/Candor.SOURCE_LOUVER_Z
-        comb_max = comb_separation - 1.
-        comb_min = 0.1
-        comb_width = np.maximum(np.minimum(louver, comb_max), comb_min)
-        n.comb_filter(z=comb_z, n=Candor.SOURCE_LOUVER_N, width=comb_width,
-                      separation=comb_separation)
+    ## Play with a pre-sample comb selector (doesn't exist on candor)
+    #if False and has_multibeam:
+    #    comb_z = -1000
+    #    comb_separation = Candor.SOURCE_LOUVER_SEPARATION*comb_z/Candor.SOURCE_LOUVER_Z
+    #    comb_max = comb_separation - 1.
+    #    comb_min = 0.1
+    #    comb_width = np.maximum(np.minimum(louver, comb_max), comb_min)
+    #    n.comb_filter(z=comb_z, n=Candor.SOURCE_LOUVER_N, width=comb_width,
+    #                  separation=comb_separation)
 
     n.slit(z=Candor.PRE_SAMPLE_SLIT_Z, width=sample_slit, offset=sample_slit_offset)
     #return n
@@ -687,10 +690,10 @@ def simulate(count, trace=False,
     n.slit(z=Candor.POST_SAMPLE_SLIT_Z, width=detector_slit,
            offset=detector_slit_offset)
 
-    # Play with a post-sample comb selector (doesn't exist on candor)
-    if False:
-        n.comb_filter(z=-comb_z, n=Candor.SOURCE_LOUVER_N, width=comb_width,
-                      separation=comb_separation)
+    ## Play with a post-sample comb selector (doesn't exist on candor)
+    #if False:
+    #    n.comb_filter(z=-comb_z, n=Candor.SOURCE_LOUVER_N, width=comb_width,
+    #                  separation=comb_separation)
 
     # Send the neutrons through the detector mask
     n.detector_bank(z=Candor.DETECTOR_Z, edges=detector_mask(detector_mask_width),
@@ -752,9 +755,9 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=
     #source_slit = 50.  # wide beam
     #source_slit = 150.  # super-wide beam
 
-    # TODO: should use slitAperture1a, 1b, 1c, 1d instead
-    louver = (radians(sample_angle) + Candor.SOURCE_LOUVER_ANGLES)*sample_width
-    louver = abs(louver)
+    ## TODO: should use slitAperture1a, 1b, 1c, 1d instead
+    #louver = (radians(sample_angle) + Candor.SOURCE_LOUVER_ANGLES)*sample_width
+    #louver = abs(louver)
 
     detector_slit = sample_slit
     #detector_slit = 3*sample_slit
@@ -794,11 +797,11 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=
         Q_z=qz,
         # slits
         singleSlitApertureMap="IN" if beam_mode != "multiple" else "OUT",
-        multiSlit1TransMap="IN" if beam_mode == "multiple" else "OUT",
-        multiBladeSlit1aMotor=louver[0],
-        multiBladeSlit1bMotor=louver[1],
-        multiBladeSlit1cMotor=louver[2],
-        multiBladeSlit1dMotor=louver[3],
+        #multiSlit1TransMap="IN" if beam_mode == "multiple" else "OUT",
+        #multiBladeSlit1aMotor=louver[0],
+        #multiBladeSlit1bMotor=louver[1],
+        #multiBladeSlit1cMotor=louver[2],
+        #multiBladeSlit1dMotor=louver[3],
         slitAperture1=source_slit,
         slitAperture2=sample_slit,
         slitAperture3=detector_slit,
@@ -808,7 +811,7 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=
         sampleAngleMotor=sample_angle,
         detectorTableMotor=detector_angle,
         # wavelength
-        monoTransMap="IN" if wavelength_mode == "mono" else "OUT",
+        monoTrans="IN" if wavelength_mode == "mono" else "OUT",
         mono_wavelength=wavelength,
         mono_wavelengthSpread=wavelength_spread,
         )

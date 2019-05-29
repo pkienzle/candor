@@ -68,20 +68,20 @@ devices = {
         },
         'type': 'virtual',
     },
-    'beam': {
-        'description': '',
-        'fields': {
-            'angularOffsets': {
-                'error': 0.001,
-                'label': 'beam angular offsets',
-                'mode': 'state',
-                'note': 'the angular offset of each of the 4 beams in multibeam mode',
-                'type': 'float32[]',
-                'units': '¬∞',
-            },
-        },
-        'type': 'virtual',
-    },
+    # 'beam': {
+    #     'description': '',
+    #     'fields': {
+    #         'angularOffsets': {
+    #             'error': 0.001,
+    #             'label': 'beam angular offsets',
+    #             'mode': 'state',
+    #             'note': 'the angular offset of each of the 4 beams in multibeam mode',
+    #             'type': 'float32[]',
+    #             'units': '¬∞',
+    #         },
+    #     },
+    #     'type': 'virtual',
+    # },
     'detectorTable': {
         'description': '',
         'fields': {
@@ -208,6 +208,17 @@ devices = {
         },
         'type': 'virtual',
     },
+    # # Reactor power sensors
+    # 'reactorPower': {
+    #     'description': 'Device for reactor power',
+    #     'fields': {
+    #         'coldSourcePressure': 'NXlog',
+    #         'coldSourceTemperature': 'NXlog',
+    #         'reactorPowerPercent': 'NXlog',
+    #         'reactorPowerThermal': 'NXlog',
+    #         'reactorState': 'NXlog',
+    #     },
+    # },
     'rfFlipperPowerSupply': {
         'description': '',
         'fields': {
@@ -276,66 +287,67 @@ devices = {
         'primary': 'index',
         'type': 'virtual',
     },
-    'slit1a': {
-        'description': 'Multiblade slit device model device.',
-        'fields': {
-            'openingWidth': {
-                'error': 0.001,
-                'label': 'slit1a',
-                'mode': 'state',
-                'note': 'Width of the opening between the two blades.',
-                'type': 'float32',
-                'units': 'mm',
-            },
-        },
-        'primary': 'openingWidth',
-        'type': 'motor',
-    },
-    'slit1b': {
-        'description': 'Multiblade slit device model device.',
-        'fields': {
-            'openingWidth': {
-                'error': 0.001,
-                'label': 'slit1b',
-                'mode': 'state',
-                'note': 'Width of the opening between the two blades.',
-                'type': 'float32',
-                'units': 'mm',
-            },
-        },
-        'primary': 'openingWidth',
-        'type': 'motor',
-    },
-    'slit1c': {
-        'description': 'Multiblade slit device model device.',
-        'fields': {
-            'openingWidth': {
-                'error': 0.001,
-                'label': 'slit1c',
-                'mode': 'state',
-                'note': 'Width of the opening between the two blades.',
-                'type': 'float32',
-                'units': 'mm',
-            },
-        },
-        'primary': 'openingWidth',
-        'type': 'motor',
-    },
-    'slit1d': {
-        'description': 'Multiblade slit device model device.',
-        'fields': {
-            'openingWidth': {
-                'error': 0.001,
-                'label': 'slit1d',
-                'mode': 'state',
-                'note': 'Width of the opening between the two blades.',
-                'type': 'float32',
-                'units': 'mm',
-            },
-        },
-        'primary': 'openingWidth',
-        'type': 'motor',
-    },
+    ## No longer part of the design.
+    # 'slit1a': {
+    #     'description': 'Multiblade slit device model device.',
+    #     'fields': {
+    #         'openingWidth': {
+    #             'error': 0.001,
+    #             'label': 'slit1a',
+    #             'mode': 'state',
+    #             'note': 'Width of the opening between the two blades.',
+    #             'type': 'float32',
+    #             'units': 'mm',
+    #         },
+    #     },
+    #     'primary': 'openingWidth',
+    #     'type': 'motor',
+    # },
+    # 'slit1b': {
+    #     'description': 'Multiblade slit device model device.',
+    #     'fields': {
+    #         'openingWidth': {
+    #             'error': 0.001,
+    #             'label': 'slit1b',
+    #             'mode': 'state',
+    #             'note': 'Width of the opening between the two blades.',
+    #             'type': 'float32',
+    #             'units': 'mm',
+    #         },
+    #     },
+    #     'primary': 'openingWidth',
+    #     'type': 'motor',
+    # },
+    # 'slit1c': {
+    #     'description': 'Multiblade slit device model device.',
+    #     'fields': {
+    #         'openingWidth': {
+    #             'error': 0.001,
+    #             'label': 'slit1c',
+    #             'mode': 'state',
+    #             'note': 'Width of the opening between the two blades.',
+    #             'type': 'float32',
+    #             'units': 'mm',
+    #         },
+    #     },
+    #     'primary': 'openingWidth',
+    #     'type': 'motor',
+    # },
+    # 'slit1d': {
+    #     'description': 'Multiblade slit device model device.',
+    #     'fields': {
+    #         'openingWidth': {
+    #             'error': 0.001,
+    #             'label': 'slit1d',
+    #             'mode': 'state',
+    #             'note': 'Width of the opening between the two blades.',
+    #             'type': 'float32',
+    #             'units': 'mm',
+    #         },
+    #     },
+    #     'primary': 'openingWidth',
+    #     'type': 'motor',
+    # },
     'ttl': {
         'description': 'Hardware ttl viper device',
         'fields': {
@@ -494,51 +506,51 @@ devices = {
         },
         'type': 'hardware',
     },
-
 }
 
-class Candor(Instrument):
-    # dimensions in millimeters
+class Candor(Instrument): # dimensions in millimeters
     MONOCHROMATOR_Z = -5216.5
     SOURCE_APERTURE_Z = -4600. # TODO: missing this number
     SOURCE_APERTURE = 60.
-    SOURCE_LOUVER_Z = -4403.026
-    SOURCE_LOUVER_N = 4
-    SOURCE_LOUVER_SEPARATION = 15.5  # center-center distance for source multi-slits
-    SOURCE_LOUVER_MAX = 14.5  # maximum opening for source multi-slit
     SOURCE_SLIT_Z = -4335.86
     PRE_SAMPLE_SLIT_Z = -356.0
     POST_SAMPLE_SLIT_Z = 356.0
+    DETECTOR_Z = 3496.
+    SOURCE_LOUVER_Z = -4403.026
+
     DETECTOR_MASK_HEIGHT = 30.
     DETECTOR_MASK_WIDTHS = [10., 8., 6., 4.]
     DETECTOR_MASK_N = 30  # Must be a multiple of 3
     #DETECTOR_MASK_N = 3
     DETECTOR_MASK_SEPARATION = 12.84
-    DETECTOR_Z = 3496.
     DETECTOR_WIDTH = (DETECTOR_MASK_N+1)*DETECTOR_MASK_SEPARATION
     DETECTOR_LEAF = 54  # Max of 54
     #DETECTOR_LEAF = 6  # Max of 54
 
+    SOURCE_LOUVER_N = 4
+    SOURCE_LOUVER_SEPARATION = 15.5  # center-center distance for source multi-slits
     SOURCE_LOUVER_CENTERS = np.linspace(-1.5*SOURCE_LOUVER_SEPARATION,
                                         +1.5*SOURCE_LOUVER_SEPARATION,
                                         SOURCE_LOUVER_N)
     SOURCE_LOUVER_ANGLES = np.arctan2(SOURCE_LOUVER_CENTERS, -SOURCE_LOUVER_Z)
+    SOURCE_LOUVER_MAX = 14.5  # maximum opening for source multi-slit
 
     areaDetector = Detector(description="The main area detector for Candor",
                             dimension=[DETECTOR_MASK_N//3*2, DETECTOR_LEAF], offset=0, strides=[DETECTOR_LEAF, 1])
     attenuator = Map(label="attenuator", types=("int32", "float32"), description="CANDOR available attenuators.")
     attenuatorMotor = Motor(label="attenuator motor", units="cm", description="CANDOR attenuator motor.")
+    convergingGuide = Motor(description="Horizontal converging guide", label="guide width", units="mm")
+    convergingGuideMap = InOut(label="converging guide")
     counter = Counter()
     detectorMaskMap = Map(label="detector mask", types=("string", "float32"), description="")
     detectorMaskMotor = Motor(description="Vertically translates a mask over all detectors allowing for varying beam widths.", label="detector mask motor", units="mm")
     detectorTableMotor = Motor(description="Scattering Angle", label="detector table motor", units="degree")
     experiment = Experiment("CANDOR")
-    convergingGuide = Motor(description="Horizontal converging guide", label="guide width", units="mm")
-    convergingGuideMap = InOut(label="converging guide")
-    monoTrans = Motor(label="monochromator translator", units="mm", description="Translate the monochromator into and out of the beam path")
-    monoTransMap = InOut(label="monochromator")
+    monoTrans = InOut(label="monochromator")
+    monoTransMotor = Motor(label="monochromator translator", units="mm", description="Translate the monochromator into and out of the beam path")
     polarizerTrans = Motor(description="Translates the polarizer in and out of the beam", label="polarizer trans", units="mm")
     rateMeter = RateMeter()
+
     sampleAngleMotor = Motor(description="Sample rotation", label="sample angle", units="degree")
     sampleIndexToDescription = Map(label="sample index to description", types=("int32", "string"), description="")
     sampleIndexToID = Map(label="sample index to ID", types=("int32", "string"), description="")
@@ -553,13 +565,12 @@ class Candor(Instrument):
     slitAperture1 = Motor(description="source slit", label="source slit", units="mm")
     slitAperture2 = Motor(description="presample slit", label="presample slit", units="mm")
     slitAperture3 = Motor(description="postsample slit", label="postsample slit", units="mm")
-    slitAperture4 = Motor(description="detector slit", label="detector slit", units="mm")
-    multiSlit1TransMap = InOut(label="multislit")
-    multiSlitTransMotor = Motor(description="multislit stage translation", label="multislit", units="mm")
-    multiBladeSlit1aMotor = Motor(description="beam 1 source slit", label="multislit1", units="degree")
-    multiBladeSlit1bMotor = Motor(description="beam 2 source slit", label="multislit2", units="degree")
-    multiBladeSlit1cMotor = Motor(description="beam 3 source slit", label="multislit3", units="degree")
-    multiBladeSlit1dMotor = Motor(description="beam 4 source slit", label="multislit4", units="degree")
+    #multiSlit1TransMap = InOut(label="multislit")
+    #multiSlitTransMotor = Motor(description="multislit stage translation", label="multislit", units="mm")
+    #multiBladeSlit1aMotor = Motor(description="beam 1 source slit", label="multislit1", units="degree")
+    #multiBladeSlit1bMotor = Motor(description="beam 2 source slit", label="multislit2", units="degree")
+    #multiBladeSlit1cMotor = Motor(description="beam 3 source slit", label="multislit3", units="degree")
+    #multiBladeSlit1dMotor = Motor(description="beam 4 source slit", label="multislit4", units="degree")
     trajectory = Trajectory()
     trajectoryData = TrajectoryData()
 
@@ -729,9 +740,9 @@ def candor_setup():
         Q_angleIndex=0,
         Q_wavelengthIndex=0,
         Q_beamIndex=0,
-        multiSlit1TransMap="OUT",
+        #multiSlit1TransMap="OUT",
         singleSlitApertureMap="IN",
-        monoTransMap="OUT",
+        monoTrans="OUT",
         mono_wavelength=4.75,
         mono_wavelengthSpread=0.01,
     )
@@ -755,4 +766,5 @@ def demo():
     print(stream.end_record())
 
 if __name__ == "__main__":
-    demo()
+    print(np.degrees(Candor.SOURCE_LOUVER_ANGLES))
+    #demo()
