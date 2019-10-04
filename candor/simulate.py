@@ -88,7 +88,7 @@ class Neutrons(object):
         I_weighted = I/np.mean(I)
 
         self.spectrum = spectrum
-        self.xy = np.zeros((2, n),'d')
+        self.xy = np.zeros((2, n), 'd')
         self.angle = (np.random.rand(n)-0.5)*radians(divergence)
         self.wavelength = np.random.rand(n)*(L_max-L_min) + L_min
         self.weight = np.interp(self.wavelength, L, I_weighted)
@@ -98,14 +98,15 @@ class Neutrons(object):
         self.trace = trace
         self.elements = []
 
-    def converging_source(self, z, width, sample_low, sample_high):
-        n = self.xy.shape[1]
+    def converging_source(self, z, width, sample_low, sample_high,
+                          sample_z=0, portion=1.0):
+        n = int(self.xy.shape[1]*portion)
         self.z = z
         x = (np.random.rand(n)-0.5)*width
         y = ((np.random.rand(n)-0.5)*(sample_high-sample_low)
              + (sample_high + sample_low)/2)
-        self.x = x
-        self.angle = arctan2(y-x, -z)
+        self.x[:n] = x
+        self.angle[:n] = arctan2(y-x, sample_z-z)
         self.source = 0
         self.add_trace()
         self.add_element((z, -width), (z, -width/2))
@@ -147,7 +148,7 @@ class Neutrons(object):
         self.add_element((z, edges[-1]), (z, edges[-1]+widths[-1]/2))
 
     def trim(self):
-        self.xy = self.xy[:,self.active]
+        self.xy = self.xy[:, self.active]
         self.angle = self.angle[self.active]
         self.wavelength = self.wavelength[self.active]
         self.weight = self.weight[self.active]
@@ -529,7 +530,8 @@ def source_divergence(source_slit_z, source_slit_w,
         min_angle = min(pre_lo, sample_lo)
     return degrees(max(abs(max_angle), abs(min_angle)))
 
-def simulate(count, trace=False,
+def simulate(
+        count, trace=False,
         sample_width=10., sample_offset=0., sample_diffuse=0.,
         sample_slit_offset=0., detector_slit_offset=0.,
         refl=lambda kz: 1., intensity=1., background=0.,
@@ -638,18 +640,22 @@ def simulate(count, trace=False,
     #                  Candor.SOURCE_LOUVER_SEPARATION,
     #                  focus=Candor.PRE_SAMPLE_SLIT_Z,
     #                  )
+    spill = 0.1 # Spill for converging beam
     if has_converging_guide:
         # Convergent guides remove any effects of slit collimation, and so are
         # equivalent to sliding the source toward the sample
         # Ignore divergence and use sample footprint to define beam
-        spill = 0.1
+        source_z = Candor.PRE_SAMPLE_SLIT_Z
+        source_width = sample_slit
         sample_xs = sample_width*sin(radians(sample_angle))
         sample_low = sample_xs*(-0.5 - spill + sample_offset/sample_width)
         sample_high = sample_xs*(0.5 + spill + sample_offset/sample_width)
-        n.converging_source(Candor.PRE_SAMPLE_SLIT_Z, sample_slit, sample_low, sample_high)
+        n.converging_source(source_z, source_width, sample_low, sample_high)
     else:
         # Use fixed width source with given divergence
         # Aim the center of the divergence at the target position
+        source_z = Candor.SOURCE_SLIT_Z
+        sorce_width = source_slit
         target = Candor.PRE_SAMPLE_SLIT_Z
         #target = POST_SAMPLE_SLIT_Z
         #target = DETECTOR_Z
@@ -657,7 +663,50 @@ def simulate(count, trace=False,
         #target = -10  # just before sample
         #target = 0  # at the sample
         #target = 10  # just after sample
-        n.slit_source(Candor.SOURCE_SLIT_Z, source_slit, target=target)
+        n.slit_source(source_z, source_width, target=target)
+
+    _ = """
+    # WRONG: this projects onto the sample position, not post-sample slit
+    # postion.  I'm leaving it here because it says how to do so, but it
+    # should be removed.
+
+    # Point 10% of the beam at the post-sample slits
+    # Need to find the post-sample slit end points first, then draw line from
+    # top of source to top of detector and see where it intercepts z = 0.
+    r = Candor.POST_SAMPLE_SLIT_Z
+    sina, cosa = sin(radians(detector_angle)), cos(radians(detector_angle))
+    x, y = r*cosa, r*sina
+    d = detector_slit/2 + detector_slit_offset
+    x1, y1 = source_z, source_width/2
+    x2, y2 = x - d*sina, y + d*cosa
+    target_high = y1 + (0 - x1) * (y2 - y1) / (x2 - x1)
+    #print("top", (x1, y1), (x, y), (x2, y2), (x2-x1, y2-y1, 0-x1), target_high)
+    # Same for bottoms:
+    d = -detector_slit/2 + detector_slit_offset
+    x1, y1 = source_z, -source_width/2
+    x2, y2 = x - d*sina, y + d*cosa
+    target_low = y1 + (0 - x1) * (y2 - y1) / (x2 - x1)
+    #print("bottom", (x, y), (x2, y2), target_low)
+    n.converging_source(source_z, source_width, target_low, target_high, portion=0.1)
+    """
+
+    # Point 10% of the beam at the post-sample slits
+    # Need to find the post-sample slit end points first, then draw line from
+    # top of source to top of detector and see where it intercepts z = 0.
+    # WRONG: assumes that the post-sample slit is parallel to pre-sample slits
+    # It is not in general, but averaging the z positions at the ends of the
+    # openings is good enough even for 50 mm slits at 20 degrees.
+    r = Candor.POST_SAMPLE_SLIT_Z
+    d_low = -detector_slit/2 + detector_slit_offset
+    d_high = detector_slit/2 + detector_slit_offset
+    sina, cosa = sin(radians(detector_angle)), cos(radians(detector_angle))
+    target_z = r*cosa - (d_low+d_high)*sina/2
+    target_high = r*sina + d_high*cosa
+    target_low = r*sina + d_low*cosa
+
+    #print("bottom", (x, y), (x2, y2), target_low)
+    n.converging_source(source_z, source_width, target_low, target_high,
+                        sample_z=target_z, portion=0.1)
 
     ## Play with a pre-sample comb selector (doesn't exist on candor)
     #if False and has_multibeam:
