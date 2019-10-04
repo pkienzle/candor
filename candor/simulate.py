@@ -88,7 +88,7 @@ class Neutrons(object):
         I_weighted = I/np.mean(I)
 
         self.spectrum = spectrum
-        self.xy = np.zeros((2,n),'d')
+        self.xy = np.zeros((2, n),'d')
         self.angle = (np.random.rand(n)-0.5)*radians(divergence)
         self.wavelength = np.random.rand(n)*(L_max-L_min) + L_min
         self.weight = np.interp(self.wavelength, L, I_weighted)
@@ -561,12 +561,12 @@ def simulate(count, trace=False,
     detector_table_angle = candor.detectorTableMotor.softPosition
 
     has_converging_guide = candor.convergingGuideMap.key == "IN"
-    has_single = candor.singleSlitApertureMap.key == "IN"
+    #has_single = candor.singleSlitApertureMap.key == "IN"
     has_mono = candor.monoTrans.key == "IN"
     mono_wavelength = candor.mono.wavelength
     mono_wavelength_spread = candor.mono.wavelengthSpread
 
-    beam_offset = candor.beam.angularOffsets[source_beam] if has_multibeam else 0.
+    #beam_offset = candor.beam.angularOffsets[source_beam] if has_multibeam else 0.
     bank_angle = candor.detectorTable.rowAngularOffsets[target_bank]
     target_wavelength = candor.wavelengths[target_bank, target_leaf]
 
@@ -579,7 +579,7 @@ def simulate(count, trace=False,
     lambda_i = mono_wavelength if has_mono else target_wavelength
     lambda_f = target_wavelength
     if candor.Q.x is None or candor.Q.z is None:
-        theta_i = sample_angle + beam_offset
+        theta_i = sample_angle #+ beam_offset
         theta_f = detector_table_angle + bank_angle
         qx, qz = qcalc.angle_to_qxz(theta_i, theta_f, lambda_i, lambda_f)
         candor.Q.x, candor.Q.z = qx, qz
@@ -588,7 +588,7 @@ def simulate(count, trace=False,
         L = target_wavelength
         qx, qz = candor.Q.x, candor.Q.z
         theta_i, theta_f = qcalc.qxz_to_angle(qx, qz, lambda_i, lambda_f)
-        sample_angle = theta_i - beam_offset
+        sample_angle = theta_i #- beam_offset
         detector_table_angle = theta_f - bank_angle
         candor.move(
             sampleAngleMotor=sample_angle,
@@ -602,7 +602,7 @@ def simulate(count, trace=False,
 
     # Proceed with simulation
     has_sample = (sample_width > 0.)
-    beam_mode = "single" if has_single else "multiple" if has_multibeam else "spread"
+    #beam_mode = "single" if has_single else "multiple" if has_multibeam else "spread"
 
     # Enough divergence to cover the presample slit from the source aperture
     # Make sure we get the direct beam as well.
@@ -767,9 +767,9 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=
     #sample_slit = louver[0]*2
     #sample_slit_offset = SOURCE_LOUVER_CENTERS[0]*PRE_SAMPLE_SLIT_Z/SOURCE_LOUVER_Z  # type: float
 
-    beam_mode = "single"
-    #beam_mode = "converging"
-    #beam_mode = "multiple"
+    #beam_mode = "single"
+    beam_mode = "converging"
+    #beam_mode = "multiple"  # DEPRECATED
 
     wavelength_mode = "white"
     #wavelength_mode = "mono"
@@ -796,7 +796,7 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=
         Q_x=qx,
         Q_z=qz,
         # slits
-        singleSlitApertureMap="IN" if beam_mode != "multiple" else "OUT",
+        #singleSlitApertureMap="IN" if beam_mode != "multiple" else "OUT",
         #multiSlit1TransMap="IN" if beam_mode == "multiple" else "OUT",
         #multiBladeSlit1aMotor=louver[0],
         #multiBladeSlit1bMotor=louver[1],

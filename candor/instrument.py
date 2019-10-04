@@ -561,7 +561,7 @@ class Candor(Instrument): # dimensions in millimeters
     sampleTiltY = Motor(description="sample upper tilt", label="sample tilt y", units="degree")
     sampleTransX = Motor(description="sample lower translation", label="sample offset x", units="mm")
     sampleTransY = Motor(description="sample upper translation", label="sample offset y", units="mm")
-    singleSlitApertureMap = InOut(label="source slit")
+    #singleSlitApertureMap = InOut(label="source slit")
     slitAperture1 = Motor(description="source slit", label="source slit", units="mm")
     slitAperture2 = Motor(description="presample slit", label="presample slit", units="mm")
     slitAperture3 = Motor(description="postsample slit", label="postsample slit", units="mm")
@@ -728,7 +728,7 @@ def candor_setup():
     candor = Candor()
     candor.load_nexus()
     candor.move(
-        beam_angularOffsets=degrees(beam_angles),
+        #beam_angularOffsets=degrees(beam_angles),
         detectorTable_angularSpreads=angular_spreads,
         detectorTable_rowAngularOffsets=degrees(bank_angles),
         detectorTable_wavelengthSpreads=wavelength_spreads,
@@ -741,7 +741,7 @@ def candor_setup():
         Q_wavelengthIndex=0,
         Q_beamIndex=0,
         #multiSlit1TransMap="OUT",
-        singleSlitApertureMap="IN",
+        #singleSlitApertureMap="IN",
         monoTrans="OUT",
         mono_wavelength=4.75,
         mono_wavelengthSpread=0.01,
