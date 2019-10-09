@@ -431,6 +431,7 @@ class Neutrons(object):
         pylab.ylabel('x (mm)')
 
     def _plot_trace_old(self, split=False):
+        raise NotImplemented("_plot_trace_old requires source louvers")
         from matplotlib.lines import Line2D
         colors = 'rgby'
         for k, (zx, active) in enumerate(self.history[:-1]):
@@ -476,6 +477,7 @@ class Neutrons(object):
                 pylab.plot([z1, z2], [x1, x2], 'k')
 
 def choose_sample_slit(louver, sample_width, sample_angle):
+    raise NotImplemented("choose_sample_slit requires source louvers")
     theta = radians(sample_angle)
     index = np.nonzero(louver)[0]
     k = index[-1]
@@ -761,12 +763,12 @@ def fake_sample():
         # depth rho rhoM thetaM phiM
         [ 0, 0.0, 0.0, 270, 0],
         [200, 4.0, 1.0, 359.9, 0.0],
-        [200, 2.0, 1.0, 270, 0.0],
-        [ 0, 4.0, 0.0, 270, 0.0],
+        [200, 4.5, 1.0, 270, 0.0],
+        [ 0, 2.07, 0.0, 270, 0.0],
     ]
     depth, rho, rhoM, thetaM, phiM = zip(*layers)
-    rho = np.array(rho)*1000 #*400
-    refl = lambda kz: abs(abeles.refl(kz, depth, rho))**2
+    rho = np.array(rho) #*400
+    refl = lambda kz: (abs(abeles.refl(kz.flatten(), depth, rho))**2).reshape(kz.shape)
     #refl = lambda kz: 0.9*np.ones(kz.shape)
     #pylab.semilogy(refl(np.linspace(0, 0.2, 1000))); pylab.show(); sys.exit()
     return refl

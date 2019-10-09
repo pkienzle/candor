@@ -516,7 +516,6 @@ class Candor(Instrument): # dimensions in millimeters
     PRE_SAMPLE_SLIT_Z = -356.0
     POST_SAMPLE_SLIT_Z = 356.0
     DETECTOR_Z = 3496.
-    SOURCE_LOUVER_Z = -4403.026
 
     DETECTOR_MASK_HEIGHT = 30.
     DETECTOR_MASK_WIDTHS = [10., 8., 6., 4.]
@@ -527,13 +526,14 @@ class Candor(Instrument): # dimensions in millimeters
     DETECTOR_LEAF = 54  # Max of 54
     #DETECTOR_LEAF = 6  # Max of 54
 
-    SOURCE_LOUVER_N = 4
-    SOURCE_LOUVER_SEPARATION = 15.5  # center-center distance for source multi-slits
-    SOURCE_LOUVER_CENTERS = np.linspace(-1.5*SOURCE_LOUVER_SEPARATION,
-                                        +1.5*SOURCE_LOUVER_SEPARATION,
-                                        SOURCE_LOUVER_N)
-    SOURCE_LOUVER_ANGLES = np.arctan2(SOURCE_LOUVER_CENTERS, -SOURCE_LOUVER_Z)
-    SOURCE_LOUVER_MAX = 14.5  # maximum opening for source multi-slit
+    #SOURCE_LOUVER_Z = -4403.026
+    #SOURCE_LOUVER_N = 4
+    #SOURCE_LOUVER_SEPARATION = 15.5  # center-center distance for source multi-slits
+    #SOURCE_LOUVER_CENTERS = np.linspace(-1.5*SOURCE_LOUVER_SEPARATION,
+    #                                    +1.5*SOURCE_LOUVER_SEPARATION,
+    #                                    SOURCE_LOUVER_N)
+    #SOURCE_LOUVER_ANGLES = np.arctan2(SOURCE_LOUVER_CENTERS, -SOURCE_LOUVER_Z)
+    #SOURCE_LOUVER_MAX = 14.5  # maximum opening for source multi-slit
 
     areaDetector = Detector(description="The main area detector for Candor",
                             dimension=[DETECTOR_MASK_N//3*2, DETECTOR_LEAF], offset=0, strides=[DETECTOR_LEAF, 1])
@@ -703,8 +703,8 @@ def candor_setup():
 
     # Multibeam beam centers and angles
     # Note: if width is 0, then both edges are at the center
-    beam_centers = comb(4, 0, Candor.SOURCE_LOUVER_SEPARATION)[::2]
-    beam_angles = arctan(beam_centers/-Candor.SOURCE_LOUVER_Z)
+    #beam_centers = comb(4, 0, Candor.SOURCE_LOUVER_SEPARATION)[::2]
+    #beam_angles = arctan(beam_centers/-Candor.SOURCE_LOUVER_Z)
 
     # Detector bank wavelengths and angles
     # Note: assuming flat detector bank; a curved bank will give very slightly
@@ -766,5 +766,5 @@ def demo():
     print(stream.end_record())
 
 if __name__ == "__main__":
-    print(np.degrees(Candor.SOURCE_LOUVER_ANGLES))
-    #demo()
+    #print(np.degrees(Candor.SOURCE_LOUVER_ANGLES))
+    demo()
