@@ -196,7 +196,8 @@ def qxz_to_angle_nice(qx, qz, sample_lambda=5., detector_lambda=5.):
     sample_theta_m = clip_angle(degrees(sample_theta_m))
     detector_theta_m = clip_angle(degrees(detector_theta_m))
     return sample_theta_m, detector_theta_m
-qxz_to_angle = qxz_to_angle_nice
+
+qxz_to_angle = qxz_to_angle_pak
 
 def _check_angle(angles, wavelengths, tol=1e-8):
     #wavelengths = 4.0, 5.0

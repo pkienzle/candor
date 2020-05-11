@@ -31,7 +31,7 @@ def rotate(xy, theta):
     Rotate points x,y through angle theta.
     """
     sin_theta, cos_theta = sin(theta), cos(theta)
-    R = np.array([[cos_theta, -sin_theta],[sin_theta, cos_theta]])
+    R = np.array([[cos_theta, -sin_theta], [sin_theta, cos_theta]])
     return np.dot(R, xy)
 
 class Neutrons(object):
@@ -394,6 +394,18 @@ class Neutrons(object):
         self.weight *= rk
         return self
 
+    def plot_beam(self):
+        active_angle = self.angle[self.active] if self.active.any() else self.angle
+        active_angle = degrees(active_angle) + self.sample_angle
+        pylab.hist(active_angle, bins=150)
+        #pylab.xlabel(f"incident angle (degrees) [Δθ/θ 1-σ = {100*sigma:.2f}% (meas.) {100*self.estimated_divergence:.2f}% (est.)]")
+        pylab.xlabel(f"incident angle (degrees)")
+        pylab.ylabel("counts")
+        sigma = np.std(active_angle)#/self.sample_angle
+        pct_err = 100*(sigma/self.estimated_divergence - 1)
+        pylab.title(f"angular distribution [Δθ = {sigma:.4f}° 1-σ (err in est = {pct_err:.1f}%]")
+        #print(f"max/min angle = ({active_angle.max()}, {active_angle.min()})")
+
     def plot_trace(self, split=None):
         from matplotlib.collections import LineCollection
         import matplotlib.colors as mcolors
@@ -532,11 +544,49 @@ def source_divergence(source_slit_z, source_slit_w,
         min_angle = min(pre_lo, sample_lo)
     return degrees(max(abs(max_angle), abs(min_angle)))
 
+
+_FWHM_scale = 2*sqrt(2*log(2))
+def FWHM2sigma(s):
+    return s/_FWHM_scale
+def calc_divergence(slits=None, distance=None, sample_angle=None, sample_width=np.inf):
+    # Add sample projection at distance zero
+    if np.isfinite(sample_width) and sample_angle != 0.:
+        sample = sample_width * abs(sin(radians(sample_angle)))
+        slits = list(slits) + [sample]
+        distance = list(distance) + [0.]
+
+    # Compute pair-wise delta-theta
+    def _divergence(i, j):
+        s1, s2, d = slits[i], slits[j], distance[i] - distance[j]
+        w, t = np.arctan(abs((s1 + s2)/2/d)), np.arctan(abs((s1 - s2)/2/d))
+        return np.sqrt((w**2 + t**2)/6)
+    n = len(slits)
+    sigma = [_divergence(i, j) for i in range(n) for j in range(i+1, n)]
+
+    # Find the minimum delta-theta across all pairs
+    # Sample slit is one per angle, so some divergence values will be vectors
+    sigma = np.asarray(np.broadcast_arrays(*sigma))
+    min_sigma = np.min(sigma, axis=0)
+
+    # Debugging
+    if False:
+        names = ['S1', 'S2', 'S3', 'detector', 'sample']
+        print(" ".join(f"{names[i]}={slits[i]:.1f}@{distance[i]:.1f}" for i in range(n)))
+        print(" ".join(f"{names[i]}:{names[j]}={np.degrees(sigma[i*n-(i*(i+1))//2+j-(i+1)]):.4f}" for i in range(n) for j in range(i+1, n)))
+
+        index = np.argmin(sigma, axis=0)
+        pairs = [(i, j) for i in range(n) for j in range(i+1, n)]
+        i, j = pairs[index]
+        print(f"Δθ from {names[i]}:{names[j]} s1, s2, d= {slits[i]}, {slits[j]}, abs({distance[i]} - {distance[j]}) = np.degrees({sigma[index]})")
+
+    # Convert to 1-sigma distribution in degrees
+    return degrees(min_sigma)
+
 def simulate(
         count, trace=False,
         sample_width=10., sample_offset=0., sample_diffuse=0.,
         sample_slit_offset=0., detector_slit_offset=0.,
-        refl=lambda kz: 1., intensity=1., background=0.,
+        refl=lambda kz: np.ones_like(kz), intensity=1., background=0.,
         ):
     candor = Candor()
 
@@ -583,21 +633,22 @@ def simulate(
     lambda_i = mono_wavelength if has_mono else target_wavelength
     lambda_f = target_wavelength
     if candor.Q.x is None or candor.Q.z is None:
+        #print("A")
         theta_i = sample_angle #+ beam_offset
         theta_f = detector_table_angle + bank_angle
         qx, qz = qcalc.angle_to_qxz(theta_i, theta_f, lambda_i, lambda_f)
         candor.Q.x, candor.Q.z = qx, qz
-        #print("angles to qx, qz")
+        #print("angles to qx, qz", theta_i, theta_f, qx, qz)
     if sample_angle is None or detector_table_angle is None:
-        L = target_wavelength
         qx, qz = candor.Q.x, candor.Q.z
+        #print("B", qx, qz, lambda_i, lambda_f)
         theta_i, theta_f = qcalc.qxz_to_angle(qx, qz, lambda_i, lambda_f)
         sample_angle = theta_i #- beam_offset
         detector_table_angle = theta_f - bank_angle
         candor.move(
             sampleAngleMotor=sample_angle,
             detectorTableMotor=detector_table_angle)
-        #print("qx, qz to angles", lambda_i, lambda_f, theta_i, theta_f)
+        #print("qx, qz to angles", qx, qz, theta_i, theta_f)
     detector_angle = detector_table_angle + bank_angle
 
     # If just moving motors and not counting, then stop early
@@ -657,7 +708,7 @@ def simulate(
         # Use fixed width source with given divergence
         # Aim the center of the divergence at the target position
         source_z = Candor.SOURCE_SLIT_Z
-        sorce_width = source_slit
+        source_width = source_slit
         target = Candor.PRE_SAMPLE_SLIT_Z
         #target = POST_SAMPLE_SLIT_Z
         #target = DETECTOR_Z
@@ -746,6 +797,9 @@ def simulate(
     #    n.comb_filter(z=-comb_z, n=Candor.SOURCE_LOUVER_N, width=comb_width,
     #                  separation=comb_separation)
 
+    ## Mask off target detector bank
+    #n.slit(z=Candor.DETECTOR_Z, width=detector_mask_width, offset=0)
+
     # Send the neutrons through the detector mask
     n.detector_bank(z=Candor.DETECTOR_Z, edges=detector_mask(detector_mask_width),
                     center_angle=bank_angle)
@@ -754,6 +808,19 @@ def simulate(
     n.dtheta()  # compute wavelength divergence for each bank
     n.move(z=Candor.DETECTOR_Z+1000)
     #n.angle_hist()
+
+    # Compute divergence
+    pairs = (
+        (Candor.SOURCE_SLIT_Z, source_slit),
+        (Candor.PRE_SAMPLE_SLIT_Z, sample_slit),
+        (Candor.POST_SAMPLE_SLIT_Z, detector_slit),
+        (Candor.DETECTOR_Z, detector_mask_width),
+    )
+    if has_converging_guide:
+        pairs = pairs[1:]
+    distance, slits = zip(*pairs)
+    sigma = calc_divergence(slits, distance, sample_angle, sample_width)
+    n.estimated_divergence = sigma
 
     return n
 
@@ -773,17 +840,18 @@ def fake_sample():
     #pylab.semilogy(refl(np.linspace(0, 0.2, 1000))); pylab.show(); sys.exit()
     return refl
 
-def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=False):
+def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0.,
+                      trace=False, converging=False):
     #count = 10
     sample_width, sample_offset = 100., 0.
     #sample_width, sample_offset, source_slit = 2., 0., 0.02
     min_sample_angle = theta
     #mask = "4"  # 4 mm detector; posiion 3
-    mask = "10"  # 10 mm detector; position 0
+    mask = "8"  # 8 mm detector; position 0
     #sample_diffuse = 0.01
     sample_diffuse = 0.0
 
-    target_bank = 1  # detector bank to use for angle in Q calculations
+    target_bank = 10 # detector bank to use for angle in Q calculations
     target_leaf = 3  # detector leaf to use for wavelength in Q calculations
     target_beam = 1  # beam number (in multibeam mode) to use for Q calculations
 
@@ -818,8 +886,7 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=
     #sample_slit = louver[0]*2
     #sample_slit_offset = SOURCE_LOUVER_CENTERS[0]*PRE_SAMPLE_SLIT_Z/SOURCE_LOUVER_Z  # type: float
 
-    #beam_mode = "single"
-    beam_mode = "converging"
+    beam_mode = "converging" if converging else "single"
     #beam_mode = "multiple"  # DEPRECATED
 
     wavelength_mode = "white"
@@ -873,7 +940,7 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=
         sample_offset=sample_offset,
         sample_diffuse=sample_diffuse,
         sample_slit_offset=sample_slit_offset,
-        refl=fake_sample(),  # Should replace this with sample scatter
+        #refl=fake_sample(),  # Should replace this with sample scatter
         intensity=intensity,
         background=background,
         trace=trace,
@@ -881,30 +948,57 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0., trace=
 
     return n
 
-def make_sliders():
+def make_sliders(converging=False):
     sample = {
-        'sample_width': 10.,
+        'sample_width': 100.,
         'sample_offset': 0.,
         'sample_diffuse': 0.0,
         'sample_slit_offset': 0.0,
         'detector_slit_offset': 0.0,
-        'refl': fake_sample(),
-        'trace': True,
+        #'refl': fake_sample(),
     }
     count = 150
     candor = Candor()
-    def update(axis, value):
+
+    def query(axis):
+        """Return instrument or sample value for *axis*"""
+        value = (sample[axis] if axis in sample
+                 else float(candor[axis]) if axis == "detectorMaskMap"
+                 else candor[axis])
+        #print(f"axis {axis} = {value}")
+        return value
+
+    def move(axis, value):
+        """Set instrument or sample *axis* to *value*"""
         #print("moving", axis, value)
         if axis in sample:
             sample[axis] = value
+        elif axis == "detectorMaskMap":
+            # Detector mask is "0", "2", "4", "6", "8" or "10"
+            value = str(int(value/2)*2)
+            candor.move(**{axis: value})
+        elif axis in ("Q_x", "Q_z"):
+            # If changing Q then force recalculation of sample/detector angle
+            Q = {"Q_x": query("Q_x"), "Q_z": query("Q_z")}
+            Q[axis] = value
+            #candor.move(sampleAngleMotor=None, detectorTableMotor=None, **Q)
+            candor.move(sampleAngleMotor=None, detectorTableMotor=None, **{axis: value})
+        elif axis in ('sampleAngleMotor', 'detectorTableMotor'):
+            # If changing theta then force recalculation of Q
+            candor.move(Q_x=None, Q_z=None, **{axis: value})
         else:
             candor.move(**{axis: value})
-        # If changing Q then force recalculation of sample/detector angle
-        #if axis in ("Q_x", "Q_z"):
-        if axis.startswith("Q_"):
-            candor.move(sampleAngleMotor=None, detectorTableMotor=None)
-        n = simulate(count=count, **sample)
-        if axis.startswith("Q_"):
+
+    def update(axis, value):
+        move(axis, value)
+        # hack to make max sample jump to approx, inf
+        psample = sample.copy()
+        if psample['sample_width'] == 100:
+            psample['sample_width'] = 1000
+        n = simulate(count=count, trace=True, **psample)
+        # Note: needs to come after simulate.
+        # qx/qz and theta/2theta are tied, so updates to one updates the others
+        if axis in ('sampleAngleMotor', 'detectorTableMotor', 'Q_x', 'Q_z'):
             sliders.reset()
         fig = pylab.figure(2)
         limits = mpl_controls.get_zoom(fig.gca())
@@ -913,33 +1007,42 @@ def make_sliders():
         mpl_controls.set_zoom(fig.gca(), limits)
         pylab.gcf().canvas.draw_idle()
 
-    def query(axis):
-        return sample[axis] if axis in sample else candor[axis]
+        n = simulate(count=1000000, trace=False, **psample)
+        fig = pylab.figure(3)
+        limits = mpl_controls.get_zoom(fig.gca())
+        pylab.clf()
+        n.plot_beam()
+        mpl_controls.set_zoom(fig.gca(), limits)
+        pylab.gcf().canvas.draw_idle()
 
+    slit_max = 100 if converging else 10
     slider_set = (
         ('sample_width', (0, 100), 'sample width (mm)'),
         ('sample_offset', (0, 100), 'sample offset (mm)'),
         #('sample_diffuse', (0, 1), 'diffuse portion'),
-        ('Q_x', (0, 0.1), r'$Q_x$ 1/Ang'),
+        ('Q_x', (0, 0.01), r'$Q_x$ 1/Ang'),
         ('Q_z', (0, 1.0), r'$Q_z$ 1/Ang'),
         ('sampleAngleMotor', (0, 20), r'$\theta$ ($^\circ$)'),
         ('detectorTableMotor', (0, 20), r'$2\theta$ ($^\circ$)'),
-        ('slitAperture1', (0, 100), 'slit 1 (mm)'),
-        ('slitAperture2', (0, 100), 'slit 2 (mm)'),
-        ('slitAperture3', (0, 100), 'slit 3 (mm)'),
-        ('sample_slit_offset', (-100, 100), 'slit 2 offset (mm)'),
-        ('detector_slit_offset', (-100, 100), 'slit 3 offset (mm)'),
+        ('slitAperture1', (0, slit_max), 'slit 1 (mm)'),
+        ('slitAperture2', (0, slit_max), 'slit 2 (mm)'),
+        ('slitAperture3', (0, slit_max), 'slit 3 (mm)'),
+        ('detectorMaskMap', (0, slit_max), 'detector mask (mm)'),
+        ('sample_slit_offset', (-slit_max/2, slit_max/2), 'slit 2 offset (mm)'),
+        ('detector_slit_offset', (-slit_max/2, slit_max/2), 'slit 3 offset (mm)'),
     )
     n_sliders = len(sample)
     pylab.figure(1)
     sliders = mpl_controls.SliderSet(len(slider_set), update, query)
     for name, limits, label in slider_set:
-        value = sample[name] if name in sample else candor[name]
-        sliders.add(name, limits=limits, value=value, label=label)
+        #if converging and name == "slitAperture1": continue
+        valstep = 2 if name == 'detectorMaskMap' else None
+        sliders.add(name, limits=limits, value=query(name), label=label,
+                    valstep=valstep)
     pylab.figure(2)
     return sliders
 
-def scan_demo():
+def scan_demo(converging=False):
     #: number of monte carlo samples
     count = 100000
     #: number of seconds per point
@@ -952,7 +1055,7 @@ def scan_demo():
     stream = nice.StreamWriter(candor, timestamp=T0)
 
     # set initial motor positions then open trajectory
-    n = single_point_demo(theta=0.5, count=0, intensity=0.)
+    n = single_point_demo(theta=0.5, count=0, intensity=0., converging=converging)
     candor.move(
         trajectory_trajectoryID=1,
         trajectory_entryID='demo:unpolarized',
@@ -965,7 +1068,7 @@ def scan_demo():
     # run the points
     for theta in (0.5, 1.0, 1.7, 2.5):
         intensity = theta*rate*count_time
-        n = single_point_demo(theta, count=count, intensity=intensity)
+        n = single_point_demo(theta, count=count, intensity=intensity, converging=converging)
         stream.state()
         candor.move(
             counter_liveMonitor=np.random.poisson(rate*count_time*0.1),
@@ -987,16 +1090,21 @@ def main():
         scan_demo()
         return
     theta = float(sys.argv[1])
-    pylab.figure(1)
-    sliders = make_sliders()
-    pylab.figure(2)
     count = 1500
-    n = single_point_demo(theta=theta, count=count, trace=True)
+    converging = False
+
+    pylab.figure(1)
+    sliders = make_sliders(converging=converging)
+    pylab.figure(2)
+    n = single_point_demo(theta=theta, count=count, trace=True, converging=converging)
     n.plot_trace(split=False)
     #pylab.title('sample width=%g'%sample_width)
     #pylab.axis('equal')
     sliders.reset()
-    #scan_demo(150)
+    #scan_demo(150, converging=converging)
+    pylab.figure(3)
+    n = single_point_demo(theta=theta, count=100*count, trace=False, converging=converging)
+    n.plot_beam()
     pylab.show()
     sys.exit()
 

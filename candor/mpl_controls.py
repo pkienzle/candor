@@ -7,7 +7,7 @@ class SliderSet:
         self.update = update
         self.query = query
 
-    def add(self, axis, limits=None, value=None, label=None):
+    def add(self, axis, limits=None, value=None, label=None, valstep=None):
         # Delayed import, in case we are not running with matplotlib available
         from matplotlib.widgets import Slider
         from matplotlib import pyplot
@@ -19,7 +19,8 @@ class SliderSet:
             value = limits[0]
         self.k += 1
         ax = pyplot.subplot(self.n, 2, 2*self.k)
-        slider = Slider(ax, label, limits[0], limits[1], valinit=value)
+        slider = Slider(ax, label, limits[0], limits[1], valinit=value,
+                        valstep=valstep)
         slider.on_changed(lambda v: self.update(axis, v))
         self._handles[axis] = (ax, slider)
 
