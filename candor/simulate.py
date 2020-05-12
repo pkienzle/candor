@@ -16,7 +16,6 @@ from numpy import pi, inf
 import pylab
 
 from . import mpl_controls
-from . import qcalc
 from . import nice
 from .instrument import Candor, candor_setup, comb, detector_mask
 #from .nice import Instrument, Motor
@@ -598,58 +597,17 @@ def simulate(
     detector_slit = candor.slitAperture3.softPosition
     detector_mask_width = float(candor.detectorMaskMap.key)
 
-
-    ## No longer defining beams for broad multi-beam mode; now continuous
-    #has_multibeam = candor.multiSlit1TransMap.key == "IN"
-    #louver = np.array([
-    #    candor.multiBladeSlit1aMotor.softPosition,
-    #    candor.multiBladeSlit1bMotor.softPosition,
-    #    candor.multiBladeSlit1cMotor.softPosition,
-    #    candor.multiBladeSlit1dMotor.softPosition,
-    #])
-
     target_bank = candor.Q.angleIndex
-    target_leaf = candor.Q.wavelengthIndex
-    source_beam = candor.Q.beamIndex
     sample_angle = candor.sampleAngleMotor.softPosition
     detector_table_angle = candor.detectorTableMotor.softPosition
+    bank_angle = candor.detectorTable.rowAngularOffsets[target_bank]
+    detector_angle = detector_table_angle + bank_angle
 
     has_converging_guide = candor.convergingGuideMap.key == "IN"
-    #has_single = candor.singleSlitApertureMap.key == "IN"
     has_mono = candor.monoTrans.key == "IN"
     mono_wavelength = candor.mono.wavelength
     mono_wavelength_spread = candor.mono.wavelengthSpread
 
-    #beam_offset = candor.beam.angularOffsets[source_beam] if has_multibeam else 0.
-    bank_angle = candor.detectorTable.rowAngularOffsets[target_bank]
-    target_wavelength = candor.wavelengths[target_bank, target_leaf]
-
-    # Set derived motors as needed.
-    if candor.Q.wavelength is None:
-        # TODO: check this
-        candor.Q.wavelength = (mono_wavelength if has_mono
-                               else candor.wavelengths[target_bank, target_leaf])
-
-    lambda_i = mono_wavelength if has_mono else target_wavelength
-    lambda_f = target_wavelength
-    if candor.Q.x is None or candor.Q.z is None:
-        #print("A")
-        theta_i = sample_angle #+ beam_offset
-        theta_f = detector_table_angle + bank_angle
-        qx, qz = qcalc.angle_to_qxz(theta_i, theta_f, lambda_i, lambda_f)
-        candor.Q.x, candor.Q.z = qx, qz
-        #print("angles to qx, qz", theta_i, theta_f, qx, qz)
-    if sample_angle is None or detector_table_angle is None:
-        qx, qz = candor.Q.x, candor.Q.z
-        #print("B", qx, qz, lambda_i, lambda_f)
-        theta_i, theta_f = qcalc.qxz_to_angle(qx, qz, lambda_i, lambda_f)
-        sample_angle = theta_i #- beam_offset
-        detector_table_angle = theta_f - bank_angle
-        candor.move(
-            sampleAngleMotor=sample_angle,
-            detectorTableMotor=detector_table_angle)
-        #print("qx, qz to angles", qx, qz, theta_i, theta_f)
-    detector_angle = detector_table_angle + bank_angle
 
     # If just moving motors and not counting, then stop early
     if count == 0:
@@ -948,7 +906,7 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0.,
 
     return n
 
-def make_sliders(converging=False):
+def make_sliders(converging=False, R12=1.0):
     sample = {
         'sample_width': 100.,
         'sample_offset': 0.,
@@ -977,16 +935,18 @@ def make_sliders(converging=False):
             # Detector mask is "0", "2", "4", "6", "8" or "10"
             value = str(int(value/2)*2)
             candor.move(**{axis: value})
-        elif axis in ("Q_x", "Q_z"):
-            # If changing Q then force recalculation of sample/detector angle
-            Q = {"Q_x": query("Q_x"), "Q_z": query("Q_z")}
-            Q[axis] = value
-            #candor.move(sampleAngleMotor=None, detectorTableMotor=None, **Q)
-            candor.move(sampleAngleMotor=None, detectorTableMotor=None, **{axis: value})
-        elif axis in ('sampleAngleMotor', 'detectorTableMotor'):
-            # If changing theta then force recalculation of Q
-            candor.move(Q_x=None, Q_z=None, **{axis: value})
+        elif axis == "Q_z":
+            # Update slits to maintain constant footprint whem moving Qz
+            candor.move(**{axis: value})
+            L2S = abs(candor.PRE_SAMPLE_SLIT_Z)
+            L12 = abs(candor.SOURCE_APERTURE_Z - candor.PRE_SAMPLE_SLIT_Z)
+            F = sample['sample_width']
+            sample_angle = candor['sampleAngleMotor']
+            S2 = F*np.sin(np.radians(sample_angle))/(1+(1+R12)*L2S/L12)
+            S1 = S2 * R12
+            candor.move(slitAperture1=S1, slitAperture2=S2)
         else:
+            # TODO: on Qx update move S3 so it catches the reflected angle
             candor.move(**{axis: value})
 
     def update(axis, value):
@@ -1004,6 +964,8 @@ def make_sliders(converging=False):
         limits = mpl_controls.get_zoom(fig.gca())
         pylab.clf()
         n.plot_trace(split=False)
+        #pylab.title('sample width=%g'%sample['sample_width'])
+        #pylab.axis('equal')
         mpl_controls.set_zoom(fig.gca(), limits)
         pylab.gcf().canvas.draw_idle()
 
@@ -1083,30 +1045,24 @@ def scan_demo(converging=False):
 
 def main():
     candor_setup()
+    candor = Candor()
     if len(sys.argv) < 2:
         print("incident angle in degrees required, or 'scan' for scan demo")
         sys.exit(1)
+    R12 = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
     if sys.argv[1] == 'scan':
-        scan_demo()
-        return
-    theta = float(sys.argv[1])
-    count = 1500
-    converging = False
-
-    pylab.figure(1)
-    sliders = make_sliders(converging=converging)
-    pylab.figure(2)
-    n = single_point_demo(theta=theta, count=count, trace=True, converging=converging)
-    n.plot_trace(split=False)
-    #pylab.title('sample width=%g'%sample_width)
-    #pylab.axis('equal')
-    sliders.reset()
-    #scan_demo(150, converging=converging)
-    pylab.figure(3)
-    n = single_point_demo(theta=theta, count=100*count, trace=False, converging=converging)
-    n.plot_beam()
-    pylab.show()
-    sys.exit()
+        scan_demo(R12)
+    else:
+        theta = float(sys.argv[1])
+        count = 1500
+        converging = False
+        n = single_point_demo(theta=theta, count=count, converging=converging)
+        pylab.figure(1)
+        sliders = make_sliders(converging=converging, R12=R12)
+        # Force redraw with sliders set from initial Qz (as derived from theta)
+        sliders.update('Q_z', candor['Q_z'])
+        pylab.show()
+        sys.exit()
 
 if __name__ == "__main__":
     main()

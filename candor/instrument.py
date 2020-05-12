@@ -5,6 +5,7 @@ import os.path
 import numpy as np
 from numpy import degrees, radians, arctan, arcsin, tan, sqrt
 
+from . import qcalc
 from . import nice
 from .nice import (Motor, Map, Virtual, Instrument, InOut, Counter, Detector,
                    RateMeter, Experiment, Trajectory, TrajectoryData)
@@ -595,6 +596,49 @@ class Candor(Instrument): # dimensions in millimeters
         """
         num_bank = self.detectorTable.rowAngularOffsets.size
         return np.reshape(self.detectorTable.wavelengths, (-1, num_bank)).T
+
+    def move(self, **args):
+        """Update so that Qx/Qz corresponds to sample/detector theta"""
+        old_Q_x, old_Q_z = self.Q.x, self.Q.z
+        Instrument.move(self, **args)
+        Q_x, Q_z = args.get('Q_x', None), args.get('Q_z', None)
+
+        target_bank = self.Q.angleIndex
+        target_leaf = self.Q.wavelengthIndex
+        target_wavelength = self.wavelengths[target_bank, target_leaf]
+        bank_angle = self.detectorTable.rowAngularOffsets[target_bank]
+        has_mono = self.monoTrans.key == "IN"
+        mono_wavelength = self.mono.wavelength
+        lambda_i = mono_wavelength if has_mono else target_wavelength
+        lambda_f = target_wavelength
+
+        # Set derived motors as needed.
+        self.Q.wavelength = lambda_i
+
+        # If moving Q.x and/or Q.z then update sample and detector angle,
+        # otherwise set Q.x and Q.z based on sample and detector angle.
+        if Q_x is not None or Q_z is not None:
+            if Q_z is None:
+                Q_z = old_Q_z
+            if Q_x is None:
+                Q_x = old_Q_x
+
+            #print("B", qx, qz, lambda_i, lambda_f)
+            theta_i, theta_f = qcalc.qxz_to_angle(Q_x, Q_z, lambda_i, lambda_f)
+            sample_angle = theta_i #- beam_offset
+            detector_table_angle = theta_f - bank_angle
+            self.Q.x, self.Q.z = Q_x, Q_z
+            self.sampleAngleMotor.softPosition = sample_angle
+            self.detectorTableMotor.softPosition = detector_table_angle
+        else:
+            sample_angle = self.sampleAngleMotor.softPosition
+            detector_table_angle = self.detectorTableMotor.softPosition
+            theta_i = sample_angle #+ beam_offset
+            theta_f = detector_table_angle + bank_angle
+            Q_x, Q_z = qcalc.angle_to_qxz(theta_i, theta_f, lambda_i, lambda_f)
+            self.Q.x, self.Q.z = Q_x, Q_z
+            #print("angles to qx, qz", theta_i, theta_f, qx, qz)
+
 
 # Add the virtual devices
 for k, v in devices.items():
