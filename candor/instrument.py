@@ -520,8 +520,8 @@ class Candor(Instrument): # dimensions in millimeters
 
     DETECTOR_MASK_HEIGHT = 30.
     DETECTOR_MASK_WIDTHS = [10., 8., 6., 4.]
-    DETECTOR_MASK_N = 30  # Must be a multiple of 3
-    #DETECTOR_MASK_N = 3
+    #DETECTOR_MASK_N = 30  # Must be a multiple of 3
+    DETECTOR_MASK_N = 3
     DETECTOR_MASK_SEPARATION = 12.84
     DETECTOR_WIDTH = (DETECTOR_MASK_N+1)*DETECTOR_MASK_SEPARATION
     DETECTOR_LEAF = 54  # Max of 54

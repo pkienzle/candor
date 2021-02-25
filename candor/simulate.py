@@ -798,36 +798,44 @@ def fake_sample():
     #pylab.semilogy(refl(np.linspace(0, 0.2, 1000))); pylab.show(); sys.exit()
     return refl
 
-def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0.,
-                      trace=False, converging=False):
+def single_point(theta=2.5, count=150, intensity=1e6, background=0.,
+                 trace=False, converging=False, R12=1.,
+                 sample_width=100., sample_offset=0.,
+                 fixed_slits=False, mask="8"):
     #count = 10
-    sample_width, sample_offset = 100., 0.
+    #sample_width, sample_offset = 100., 0.
     #sample_width, sample_offset, source_slit = 2., 0., 0.02
-    min_sample_angle = theta
     #mask = "4"  # 4 mm detector; posiion 3
-    mask = "8"  # 8 mm detector; position 0
+    #mask = "8"  # 8 mm detector; position 0
     #sample_diffuse = 0.01
     sample_diffuse = 0.0
 
-    target_bank = 10 # detector bank to use for angle in Q calculations
+    target_bank = 0 # detector bank to use for angle in Q calculations
     target_leaf = 3  # detector leaf to use for wavelength in Q calculations
     target_beam = 1  # beam number (in multibeam mode) to use for Q calculations
 
-    #sample_angle = min_sample_angle - degrees(SOURCE_LOUVER_ANGLES[0])
-    sample_angle = min_sample_angle
+    sample_angle = theta
     detector_angle = 2*sample_angle
     #sample_angle, detector_angle = None, None
     qx, qz = None, None
     #qx, qz = 0., 0.3
 
     sample_slit_offset = 0.
-    #sample_slit = choose_sample_slit(louver, sample_width, sample_angle)
-    sample_slit = sample_width*sin(radians(sample_angle))
-    #sample_slit = DETECTOR_WIDTH/DETECTOR_Z * POST_SAMPLE_SLIT_Z
-    #sample_slit *= 0.2
+
+    L2D = abs(Candor.DETECTOR_Z - Candor.PRE_SAMPLE_SLIT_Z)
+    L2S = abs(Candor.PRE_SAMPLE_SLIT_Z)
+    L12 = abs(Candor.SOURCE_APERTURE_Z - Candor.PRE_SAMPLE_SLIT_Z)
+    if fixed_slits:
+        # Fixed slit with beam width matching detector width
+        sample_slit = float(mask)*L2D/L12
+    else:
+        sample_slit = sample_width*sin(radians(sample_angle))
+
+    sample_slit = sample_slit/(1+(1+R12)*L2S/L12)
+    #sample_slit /= 5
     #sample_slit /= 2
 
-    source_slit = sample_slit
+    source_slit = sample_slit*R12
     #source_slit = 3.  # narrow beam
     #source_slit = 50.  # wide beam
     #source_slit = 150.  # super-wide beam
@@ -906,9 +914,11 @@ def single_point_demo(theta=2.5, count=150, intensity=1e6, background=0.,
 
     return n
 
-def make_sliders(converging=False, R12=1.0):
+def make_sliders(kw):
+    R12 = kw.get('R12', 1.0)
+    converging = kw.get('converging', False)
     sample = {
-        'sample_width': 100.,
+        'sample_width': kw.get('sample_width', 100.),
         'sample_offset': 0.,
         'sample_diffuse': 0.0,
         'sample_slit_offset': 0.0,
@@ -937,16 +947,16 @@ def make_sliders(converging=False, R12=1.0):
             candor.move(**{axis: value})
         elif axis == "Q_z":
             # Update slits to maintain constant footprint whem moving Qz
+            F = sample['sample_width']
+            sample_angle = candor['sampleAngleMotor']
             candor.move(**{axis: value})
             L2S = abs(candor.PRE_SAMPLE_SLIT_Z)
             L12 = abs(candor.SOURCE_APERTURE_Z - candor.PRE_SAMPLE_SLIT_Z)
-            F = sample['sample_width']
-            sample_angle = candor['sampleAngleMotor']
             S2 = F*np.sin(np.radians(sample_angle))/(1+(1+R12)*L2S/L12)
             S1 = S2 * R12
             candor.move(slitAperture1=S1, slitAperture2=S2)
         else:
-            # TODO: on Qx update move S3 so it catches the reflected angle
+            # TODO: check that qx is capturing diffuse beam
             candor.move(**{axis: value})
 
     def update(axis, value):
@@ -988,7 +998,7 @@ def make_sliders(converging=False, R12=1.0):
         ('detectorTableMotor', (0, 20), r'$2\theta$ ($^\circ$)'),
         ('slitAperture1', (0, slit_max), 'slit 1 (mm)'),
         ('slitAperture2', (0, slit_max), 'slit 2 (mm)'),
-        ('slitAperture3', (0, slit_max), 'slit 3 (mm)'),
+        ('slitAperture3', (0, 10*slit_max), 'slit 3 (mm)'),
         ('detectorMaskMap', (0, slit_max), 'detector mask (mm)'),
         ('sample_slit_offset', (-slit_max/2, slit_max/2), 'slit 2 offset (mm)'),
         ('detector_slit_offset', (-slit_max/2, slit_max/2), 'slit 3 offset (mm)'),
@@ -1004,7 +1014,17 @@ def make_sliders(converging=False, R12=1.0):
     pylab.figure(2)
     return sliders
 
-def scan_demo(converging=False):
+def interactive_demo(**kw):
+    candor = Candor()
+    count = 1500
+    n = single_point(count=1500, **kw)
+    pylab.figure(1)
+    sliders = make_sliders(kw)
+    # Force redraw with sliders set from initial Qz (as derived from theta)
+    sliders.update('Q_z', candor['Q_z'])
+    pylab.show()
+
+def scan_demo(**kw):
     #: number of monte carlo samples
     count = 100000
     #: number of seconds per point
@@ -1017,7 +1037,7 @@ def scan_demo(converging=False):
     stream = nice.StreamWriter(candor, timestamp=T0)
 
     # set initial motor positions then open trajectory
-    n = single_point_demo(theta=0.5, count=0, intensity=0., converging=converging)
+    n = single_point(theta=0.5, count=0, intensity=0., **kw)
     candor.move(
         trajectory_trajectoryID=1,
         trajectory_entryID='demo:unpolarized',
@@ -1030,7 +1050,7 @@ def scan_demo(converging=False):
     # run the points
     for theta in (0.5, 1.0, 1.7, 2.5):
         intensity = theta*rate*count_time
-        n = single_point_demo(theta, count=count, intensity=intensity, converging=converging)
+        n = single_point(theta, count=count, intensity=intensity, **kw)
         stream.state()
         candor.move(
             counter_liveMonitor=np.random.poisson(rate*count_time*0.1),
@@ -1043,26 +1063,49 @@ def scan_demo(converging=False):
     stream.close()
     stream.end()
 
+def single_point_demo(**kw):
+    n = single_point(count=1500, trace=True, **kw)
+    n.plot_trace()
+    n = single_point(count=1500000, trace=False, **kw)
+    pylab.figure()
+    n.plot_beam()
+    pylab.show()
+
+def footprint_demo(**kw):
+    """
+    Check that the footprint is linear in angle for fixed slits
+    """
+    # Note: needs fixed slits in single_point()
+    count = 1500000
+    data = []
+    for theta in np.linspace(0.15, 5, 30):
+        n = single_point(theta=theta, count=count, trace=False, **kw)
+        data.append((theta, np.sum(n.active)))
+        print(data[-1])
+    x, y = zip(*data)
+    pylab.plot(x, np.array(y)/count)
+    pylab.show()
+
 def main():
     candor_setup()
     candor = Candor()
     if len(sys.argv) < 2:
-        print("incident angle in degrees required, or 'scan' for scan demo")
+        print("requires incident_angle (degrees), 'scan' or 'footprint'")
         sys.exit(1)
+    # Slit 1:2 ratio
     R12 = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
     if sys.argv[1] == 'scan':
-        scan_demo(R12)
-    else:
+        # Create a
+        scan_demo(converging=False, R12=R12)
+    elif sys.argv[1] == 'footprint':
+        footprint_demo(R12=R12, sample_width=100., fixed_slits=True)
+    elif 1: # gui with sliders
         theta = float(sys.argv[1])
-        count = 1500
-        converging = False
-        n = single_point_demo(theta=theta, count=count, converging=converging)
-        pylab.figure(1)
-        sliders = make_sliders(converging=converging, R12=R12)
-        # Force redraw with sliders set from initial Qz (as derived from theta)
-        sliders.update('Q_z', candor['Q_z'])
-        pylab.show()
-        sys.exit()
+        interactive_demo(theta=theta, R12=R12, sample_width=99.)
+    else: # single point
+        theta = float(sys.argv[1])
+        #single_point_demo(theta=theta, R12=R12)
+        single_point_demo(theta=theta, R12=R12, sample_width=100., fixed_slits=True)
 
 if __name__ == "__main__":
     main()
