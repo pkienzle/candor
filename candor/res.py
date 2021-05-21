@@ -3,7 +3,7 @@ from numpy import (radians, degrees, tan, sin, cos, arcsin, arccos, arctan,
     sign, sqrt, log, exp)
 
 from . import simulate
-from .simulate import SOURCE_SLIT_Z, PRE_SAMPLE_SLIT_Z, DETECTOR_Z
+from . import instrument
 
 def plot_dLoL():
     spectrum = simulate.load_spectrum()
@@ -45,15 +45,16 @@ def resolution_simulator():
     # by setting the beam height significantly below the disk width.
 
     ## Variants
-    d1, d2 = SOURCE_SLIT_Z, PRE_SAMPLE_SLIT_Z
+    d1, d2 = instrument.Candor.SOURCE_SLIT_Z, instrument.Candor.PRE_SAMPLE_SLIT_Z
     beam_height = 8
     width=10
+    #width=0.6
     #offset = -2.
     offset = 0
     theta = 3.5
-    s1, s2 = .5, .5
+    #s1, s2 = .5, .5
     #s1, s2 = 5, 5
-    #s1, s2 = 0.15, 0.10 # different slits
+    s1, s2 = 0.15, 0.10 # different slits
     #s1, s2 = 0.05, 0.10  # different slits
     #s1, s2, theta = 0.5, 0.5, 3.5  # far out
     #s1, s2, width = 0.1, 0.01, 4 # extreme slits
@@ -253,6 +254,6 @@ def resolution_simulator():
     show()
 
 if __name__ == "__main__":
-    #resolution_simulator()
-    plot_dLoL()
+    resolution_simulator()
+    #plot_dLoL()
     #plot_channels(10)

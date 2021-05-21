@@ -1095,7 +1095,6 @@ def main():
     # Slit 1:2 ratio
     R12 = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
     if sys.argv[1] == 'scan':
-        # Create a
         scan_demo(converging=False, R12=R12)
     elif sys.argv[1] == 'footprint':
         footprint_demo(R12=R12, sample_width=100., fixed_slits=True)
@@ -1105,7 +1104,8 @@ def main():
     else: # single point
         theta = float(sys.argv[1])
         #single_point_demo(theta=theta, R12=R12)
-        single_point_demo(theta=theta, R12=R12, sample_width=100., fixed_slits=True)
+        single_point_demo(theta=theta, R12=R12, sample_width=10., fixed_slits=True)
+        #single_point_demo(theta=theta, R12=R12, sample_width=100., fixed_slits=False)
 
 if __name__ == "__main__":
     main()
